@@ -75,6 +75,8 @@ testing {
                         events("passed", "failed", "skipped")
                         showStandardStreams = true
                     }
+                    // The nested builds' output is already on the console; in the XML reports it buries the failures.
+                    reports.junitXml.includeSystemOutLog = false
                 }
             }
         }

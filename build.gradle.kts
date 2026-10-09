@@ -3,6 +3,7 @@ import org.jetbrains.kotlin.gradle.dsl.KotlinJvmProjectExtension
 import org.jetbrains.kotlin.gradle.dsl.KotlinVersion
 
 plugins {
+    base
     alias(libs.plugins.kotlin.jvm) apply false
     alias(libs.plugins.plugin.publish) apply false
 }
@@ -12,6 +13,50 @@ val projectUrl = "https://github.com/cyberpartizan/not-null-for-k"
 
 // Local Maven repository the TestKit test app resolves the plugin, processor and runtime from.
 val testRepo = layout.buildDirectory.dir("test-repo")
+
+// The fast loop: the test app's tests on one Spring Boot / Kotlin combination, the newest row of
+// TestAppFunctionalTest unless -PspringBootVersion / -PkotlinVersion say otherwise.
+tasks.register<GradleBuild>("runTestApp") {
+    group = "verification"
+    description = "Publishes NotNullForK to build/test-repo and runs the test app's tests against it."
+    dependsOn(subprojects.map { "${it.path}:publishAllPublicationsToTestRepoRepository" })
+    dir = file("test-app")
+    tasks = listOf(":published-library:publish", "test")
+    startParameter.projectProperties = mapOf(
+        "testRepo" to testRepo.get().asFile.toURI().toString(),
+        "notNullForKVersion" to version.toString(),
+        "springBootVersion" to (findProperty("springBootVersion") ?: "3.5.16").toString(),
+        "kotlinVersion" to (findProperty("kotlinVersion") ?: "2.4.21").toString(),
+    )
+}
+
+// The hard Avoid terms of GLOSSARY.md. Its softer ones ("copy", "skip", "original") are fine as plain verbs,
+// so review checks those (CODING_STANDARDS.md).
+val checkGlossaryTerms = tasks.register("checkGlossaryTerms") {
+    group = "verification"
+    description = "Fails when a source or doc file uses a term GLOSSARY.md says to avoid."
+    val sources = fileTree(projectDir) {
+        include("**/*.kt", "**/*.kts", "**/*.md")
+        // This file holds the terms themselves.
+        exclude("GLOSSARY.md", "build.gradle.kts", ".scratch/**", "**/build/**", "**/.gradle/**", "**/.kotlin/**")
+    }
+    inputs.files(sources)
+    val avoid = Regex(
+        """\bDTOs?\b|\bpayloads?\b|\bshadows?\b|\btwins?\b|generated bod(y|ies)|mandatory fields?|not-null fields?|""" +
+            """optional fields?|nested Request Bod(y|ies)|sub-DTOs?|\bexclusions?\b""",
+        RegexOption.IGNORE_CASE,
+    )
+    doLast {
+        val hits = sources.flatMap { file ->
+            file.readLines().withIndex()
+                // Bean Validation requires a constraint's `payload: Array<KClass<out Payload>>` member.
+                .filter { (_, line) -> avoid.containsMatchIn(line) && "Payload" !in line }
+                .map { (i, line) -> "${file.relativeTo(projectDir)}:${i + 1}: ${line.trim()}" }
+        }
+        if (hits.isNotEmpty()) throw GradleException("Terms GLOSSARY.md says to avoid:\n" + hits.joinToString("\n"))
+    }
+}
+tasks.check { dependsOn(checkGlossaryTerms) }
 
 subprojects {
     apply(plugin = "org.jetbrains.kotlin.jvm")

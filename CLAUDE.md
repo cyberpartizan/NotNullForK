@@ -1,0 +1,6 @@
+- Fast loop: `./gradlew test` (unit tests) and `./gradlew runTestApp` (the test app on the newest Spring Boot / Kotlin; `-PspringBootVersion=… -PkotlinVersion=…` for another). `./gradlew check` runs the full functional matrix (~11 min): once, before a commit.
+- A failing functional test: its console output is the nested build's; search it for `What went wrong` or `^e: `, not the XML reports.
+- Library APIs (KSP, KotlinPoet, Gradle): look them up with the intellij-index MCP before digging in `~/.gradle/caches`.
+- Review rules: `CODING_STANDARDS.md`. Terms: `GLOSSARY.md`. Decisions: `docs/adr/`. Releases: `README.md`.
+- Facts about external services (Maven Central, Plugin Portal): check the current docs with WebFetch before encoding them.
+- Windows: Gradle daemons lock `build/` folders; `./gradlew --stop` before deleting them.
