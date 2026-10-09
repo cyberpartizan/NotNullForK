@@ -1,12 +1,13 @@
 // End-to-end test app for the NotNullForK plugin. It is run by the TestKit tests in the
-// gradle-plugin module, which pass the versions and the local test repository as -P properties.
+// gradle-plugin module, which pass the versions as -P properties. They pass the repository with
+// NotNullForK as -PtestRepo, or else publish it to the local Maven repository.
 pluginManagement {
-    val testRepo: String by settings
+    val testRepo = providers.gradleProperty("testRepo").orNull
     val notNullForKVersion: String by settings
     val kotlinVersion: String by settings
     val springBootVersion: String by settings
     repositories {
-        maven { url = uri(testRepo) }
+        if (testRepo != null) maven { url = uri(testRepo) } else mavenLocal()
         gradlePluginPortal()
         mavenCentral()
     }
@@ -25,9 +26,9 @@ plugins {
 }
 
 dependencyResolutionManagement {
-    val testRepo: String by settings
+    val testRepo = providers.gradleProperty("testRepo").orNull
     repositories {
-        maven { url = uri(testRepo) }
+        if (testRepo != null) maven { url = uri(testRepo) } else mavenLocal()
         // Where `published-library` is published to, before the app is built against its jar.
         maven { url = uri(settingsDir.resolve("build/library-repo")) }
         mavenCentral()

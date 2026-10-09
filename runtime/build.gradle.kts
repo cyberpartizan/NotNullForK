@@ -1,3 +1,5 @@
+description = "Runtime of NotNullForK: reads Request Bodies through their Mirrors and reports missing Required Fields per field."
+
 dependencies {
     // Provided by the consumer's Spring Boot app.
     compileOnly(platform(libs.spring.boot.dependencies))
@@ -9,10 +11,6 @@ dependencies {
     // Mirrors carry Jakarta constraints, and the Required Field check needs a Bean Validation provider.
     api(libs.jakarta.validation.api)
     implementation(libs.spring.boot.starter.validation)
-}
-
-java {
-    withSourcesJar()
 }
 
 publishing {

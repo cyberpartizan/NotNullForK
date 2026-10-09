@@ -1,3 +1,5 @@
+description = "KSP processor of NotNullForK: generates a Mirror of every Request Body."
+
 dependencies {
     implementation(libs.ksp.api)
     implementation(libs.kotlinpoet.ksp)
@@ -46,10 +48,6 @@ testing {
             }
         }
     }
-}
-
-java {
-    withSourcesJar()
 }
 
 publishing {
