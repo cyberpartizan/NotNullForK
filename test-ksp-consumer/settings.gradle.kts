@@ -15,6 +15,11 @@ pluginManagement {
     }
 }
 
+plugins {
+    // Downloads a JDK 17 for the toolchain if none is installed.
+    id("org.gradle.toolchains.foojay-resolver-convention") version "0.10.0"
+}
+
 dependencyResolutionManagement {
     val testRepo: String by settings
     repositories {

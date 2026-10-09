@@ -27,12 +27,14 @@ subprojects {
     }
 
     extensions.configure<KotlinJvmProjectExtension> {
-        // Consumers may use Kotlin 2.0, so keep the metadata and stdlib readable by it.
-        coreLibrariesVersion = "2.0.21"
+        // Consumers may use Kotlin 1.8.22 (ADR 0004), so keep the metadata and stdlib readable by it.
+        coreLibrariesVersion = "1.8.22"
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_17)
-            apiVersion.set(KotlinVersion.KOTLIN_2_0)
-            languageVersion.set(KotlinVersion.KOTLIN_2_0)
+            apiVersion.set(KotlinVersion.KOTLIN_1_8)
+            languageVersion.set(KotlinVersion.KOTLIN_1_8)
+            // Language version 1.8 is deprecated, but it is the one consumers need; silence the warning on every compilation.
+            freeCompilerArgs.add("-Xsuppress-version-warnings")
         }
     }
 

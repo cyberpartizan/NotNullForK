@@ -4,6 +4,7 @@ import org.assertj.core.api.Assertions.assertThat
 import org.gradle.testkit.runner.BuildResult
 import org.gradle.testkit.runner.GradleRunner
 import org.gradle.testkit.runner.TaskOutcome
+import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.CleanupMode
 import org.junit.jupiter.api.io.TempDir
 import org.junit.jupiter.params.ParameterizedTest
@@ -21,7 +22,7 @@ class KspVersionFunctionalTest {
     lateinit var projectDir: File
 
     @ParameterizedTest(name = "Kotlin {0}, no KSP of its own")
-    @CsvSource("2.0.21", "2.4.21")
+    @CsvSource("1.9.25", "2.0.21", "2.4.21")
     fun `a consumer without KSP gets the tested KSP version`(kotlinVersion: String) {
         val result = build(kotlinVersion, plugins = listOf(KOTLIN, NOT_NULL_FOR_K))
 
@@ -30,6 +31,11 @@ class KspVersionFunctionalTest {
 
     @ParameterizedTest(name = "Kotlin {0}, KSP {1} applied {2} the plugin")
     @CsvSource(
+        // KSP1, for a Kotlin older than 2.0; a consumer of Kotlin 1.8 must apply it (ADR 0004).
+        "1.8.22, 1.8.22-1.0.11, BEFORE",
+        "1.8.22, 1.8.22-1.0.11, AFTER",
+        "1.9.25, 1.9.25-1.0.20, BEFORE",
+        "1.9.25, 1.9.25-1.0.20, AFTER",
         // Older than the tested KSP version.
         "2.0.21, 2.0.21-1.0.28, BEFORE",
         "2.0.21, 2.0.21-1.0.28, AFTER",
@@ -46,11 +52,32 @@ class KspVersionFunctionalTest {
         assertThat(kspGradlePluginVersion(result.output)).isEqualTo(kspVersion)
     }
 
+    @Test
+    fun `a consumer of Kotlin 1_8 without KSP is told to apply KSP itself`() {
+        val result = consumer("1.8.22", plugins = listOf(KOTLIN, NOT_NULL_FOR_K)).buildAndFail()
+
+        assertThat(result.output).contains(
+            "NotNullForK: Kotlin 1.8.22 needs KSP1",
+            """id("com.google.devtools.ksp") version "1.8.22-1.0.""",
+        )
+    }
+
     /**
      * Builds the consumer app with [plugins] applied in that order. The app's code compiles only if
      * both its other KSP processor and the NotNullForK processor ran.
      */
     private fun build(kotlinVersion: String, plugins: List<String>): BuildResult {
+        val result = consumer(kotlinVersion, plugins).build()
+
+        assertThat(result.task(":kspKotlin")?.outcome).isEqualTo(TaskOutcome.SUCCESS)
+        assertThat(result.task(":compileKotlin")?.outcome).isEqualTo(TaskOutcome.SUCCESS)
+        assertThat(File(projectDir, "build/generated/ksp/main/kotlin/com/example/consumer/generated/GreetRequestMirror.kt"))
+            .exists()
+        return result
+    }
+
+    /** A runner of `compileKotlin` in the consumer app with [plugins] applied in that order. */
+    private fun consumer(kotlinVersion: String, plugins: List<String>): GradleRunner {
         File(System.getProperty("testKspConsumer")).copyRecursively(projectDir)
         projectDir.walkTopDown().filter { it.isDirectory && it.name in setOf("build", ".gradle", ".kotlin") }.toList()
             .forEach { it.deleteRecursively() }
@@ -58,6 +85,11 @@ class KspVersionFunctionalTest {
             """
             |plugins {
             |${plugins.joinToString("\n") { "    $it" }}
+            |}
+            |
+            |// Kotlin 1.8 can't target the JVM the build runs on.
+            |kotlin {
+            |    jvmToolchain(17)
             |}
             |
             |dependencies {
@@ -71,7 +103,7 @@ class KspVersionFunctionalTest {
             |""".trimMargin(),
         )
 
-        val result = GradleRunner.create()
+        return GradleRunner.create()
             .withProjectDir(projectDir)
             .withArguments(
                 "compileKotlin",
@@ -81,13 +113,6 @@ class KspVersionFunctionalTest {
                 "-PkotlinVersion=$kotlinVersion",
             )
             .forwardOutput()
-            .build()
-
-        assertThat(result.task(":kspKotlin")?.outcome).isEqualTo(TaskOutcome.SUCCESS)
-        assertThat(result.task(":compileKotlin")?.outcome).isEqualTo(TaskOutcome.SUCCESS)
-        assertThat(File(projectDir, "build/generated/ksp/main/kotlin/com/example/consumer/generated/GreetRequestMirror.kt"))
-            .exists()
-        return result
     }
 
     private fun kspGradlePluginVersion(output: String): String =

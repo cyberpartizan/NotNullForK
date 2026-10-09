@@ -17,6 +17,16 @@ The plugin applies KSP and adds the processor (`com.github.cyberpartizan:not-nul
 (`com.github.cyberpartizan:not-null-for-k-runtime`) in its own version. No other build configuration is needed.
 A KSP version the project applies itself is kept (ADR 0003).
 
+Kotlin 1.8.22 and newer are supported. On Kotlin 1.8, apply the KSP of your Kotlin version yourself (ADR 0004):
+
+```kotlin
+plugins {
+    kotlin("jvm") version "1.8.22"
+    id("com.google.devtools.ksp") version "1.8.22-1.0.11"
+    id("com.github.cyberpartizan.not-null-for-k") version "..."
+}
+```
+
 ## Modules and publishing
 
 | Module          | Artifact                                                  | Published to         |

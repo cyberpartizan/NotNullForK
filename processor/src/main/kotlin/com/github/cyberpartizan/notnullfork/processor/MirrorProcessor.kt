@@ -21,12 +21,17 @@ import com.google.devtools.ksp.symbol.KSFile
 import com.google.devtools.ksp.symbol.KSPropertyDeclaration
 import com.google.devtools.ksp.symbol.KSType
 import com.google.devtools.ksp.symbol.KSTypeAlias
+import com.google.devtools.ksp.symbol.KSTypeReference
 import com.google.devtools.ksp.symbol.KSValueParameter
 import com.google.devtools.ksp.symbol.Modifier
 import com.google.devtools.ksp.symbol.Origin
 import com.google.devtools.ksp.symbol.Variance
 import com.squareup.kotlinpoet.AnnotationSpec
 import com.squareup.kotlinpoet.ClassName
+import com.squareup.kotlinpoet.ParameterizedTypeName
+import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
+import com.squareup.kotlinpoet.TypeName
+import com.squareup.kotlinpoet.WildcardTypeName
 import com.squareup.kotlinpoet.ksp.toAnnotationSpec
 import com.squareup.kotlinpoet.ksp.toClassName
 import com.squareup.kotlinpoet.ksp.toTypeName
@@ -219,7 +224,7 @@ class MirrorProcessor(
         val warnings = mutableListOf<Pair<String, KSValueParameter>>()
         val fields = parameters.map { parameter ->
             val name = parameter.name!!.asString()
-            val type = parameter.type.toTypeName()
+            val type = parameter.type.typeName()
             val mutable = parameter.isVar
             val annotations = jacksonAnnotations(parameter, properties[name])
             when {
@@ -314,9 +319,33 @@ class MirrorProcessor(
         val possiblyNested = possiblyNestedTypeOf(elementType)
         if (elementType.isMarkedNullable && possiblyNested == null) return null to null
         // Type annotations on the type arguments (e.g. constraints) are not copied to the Mirror.
-        val key = arguments.takeIf { kind == Container.Kind.MAP }?.first()?.type?.toTypeName()?.copy(annotations = emptyList())
-        val container = Container(kind, key, element.toTypeName().copy(annotations = emptyList()), !elementType.isMarkedNullable)
+        val key = arguments.takeIf { kind == Container.Kind.MAP }?.first()?.type?.typeName()?.copy(annotations = emptyList())
+        val container = Container(kind, key, element.typeName().copy(annotations = emptyList()), !elementType.isMarkedNullable)
         return container to possiblyNested
+    }
+
+    /**
+     * The type name of this type reference. A type alias of a nullable type is named without a '?' of its
+     * own, at any depth: KSP1 adds one, and Kotlin warns that it is redundant.
+     */
+    private fun KSTypeReference.typeName(): TypeName = toTypeName().withoutNullableMarkOn(nullableAliasesIn(resolve()))
+
+    /** The names of the type aliases of a nullable type that [type] uses, at any depth. */
+    private fun nullableAliasesIn(type: KSType): Set<String> {
+        val alias = (type.declaration as? KSTypeAlias)?.takeIf { it.type.resolve().expanded().isMarkedNullable }
+        return setOfNotNull(alias?.qualifiedName?.asString()) +
+            type.arguments.flatMap { argument -> argument.type?.resolve()?.let(::nullableAliasesIn).orEmpty() }
+    }
+
+    /** This type name without the '?' on the type aliases named [aliasNames], at any depth. */
+    private fun TypeName.withoutNullableMarkOn(aliasNames: Set<String>): TypeName = when {
+        aliasNames.isEmpty() -> this
+        this is ClassName -> if (canonicalName in aliasNames) copy(nullable = false) else this
+        this is ParameterizedTypeName -> rawType.parameterizedBy(typeArguments.map { it.withoutNullableMarkOn(aliasNames) })
+            .copy(nullable = isNullable, annotations = annotations)
+        this is WildcardTypeName && inTypes.isNotEmpty() -> WildcardTypeName.consumerOf(inTypes.single().withoutNullableMarkOn(aliasNames))
+        this is WildcardTypeName -> WildcardTypeName.producerOf(outTypes.single().withoutNullableMarkOn(aliasNames))
+        else -> this
     }
 
     /** The type a non-generic type alias stands for (nullable if either is), or this type. */

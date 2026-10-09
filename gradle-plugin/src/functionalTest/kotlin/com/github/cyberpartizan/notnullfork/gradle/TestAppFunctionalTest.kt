@@ -11,7 +11,8 @@ import java.io.File
 
 /**
  * Builds the test app (`/test-app`), which applies only the plugin, and runs its tests
- * once per supported Spring Boot / Kotlin combination. The app uses Request Bodies of a sibling module
+ * once per supported Spring Boot / Kotlin combination. Below Kotlin 2.0, the app applies the matching KSP
+ * itself (ADR 0004). The app uses Request Bodies of a sibling module
  * and of a published library jar, which don't apply the plugin; the jar is published first.
  */
 class TestAppFunctionalTest {
@@ -20,15 +21,23 @@ class TestAppFunctionalTest {
     @TempDir(cleanup = CleanupMode.NEVER)
     lateinit var projectDir: File
 
-    @ParameterizedTest(name = "Spring Boot {0}, Kotlin {1}")
+    @ParameterizedTest(name = "Spring Boot {0}, Kotlin {1}, KSP {2}")
     @CsvSource(
-        "3.0.13, 2.0.21",
-        "3.5.16, 2.4.21",
+        "3.0.13, 1.8.22, 1.8.22-1.0.11",
+        "3.0.13, 2.0.21, ",
+        "3.5.16, 2.4.21, ",
     )
-    fun `the test app tests pass`(springBootVersion: String, kotlinVersion: String) {
+    fun `the test app tests pass`(springBootVersion: String, kotlinVersion: String, kspVersion: String?) {
         File(System.getProperty("testApp")).copyRecursively(projectDir)
         projectDir.walkTopDown().filter { it.isDirectory && it.name in setOf("build", ".gradle", ".kotlin") }.toList()
             .forEach { it.deleteRecursively() }
+        if (kspVersion != null) {
+            val buildFile = File(projectDir, "build.gradle.kts")
+            buildFile.writeText(
+                buildFile.readText()
+                    .replaceFirst("plugins {", "plugins {\n    id(\"com.google.devtools.ksp\") version \"$kspVersion\""),
+            )
+        }
 
         val properties = listOf(
             "-PtestRepo=${File(System.getProperty("testRepo")).toURI()}",
@@ -60,6 +69,8 @@ class TestAppFunctionalTest {
         }
         assertThat(warnings).noneMatch { "NotNullForKIgnore" in it }
         assertThat(warnings).noneMatch { "com.example.shared." in it || "com.example.invoices." in it }
+        // The generated Mirrors compile without warnings, so a consumer may turn warnings into errors.
+        assertThat(result.output.lines()).noneMatch { it.startsWith("w: ") && "/build/generated/ksp/" in it }
     }
 
     /** Runs the test app's build with [arguments]; it must succeed. */

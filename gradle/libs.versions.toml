@@ -1,6 +1,6 @@
 [versions]
 kotlin = "2.2.21"
-# Newest KSP that works with both Kotlin 2.0 (KGP 2.0 API) and the latest Kotlin; 2.2.x+ needs KGP 2.2.
+# Newest KSP that works with both Kotlin 1.9 (measured; ADR 0004) and the latest Kotlin; 2.2.x+ needs KGP 2.2.
 ksp = "2.1.21-2.0.2"
 kotlinpoet = "2.2.0"
 # The runtime is compiled against the oldest supported Spring Boot; the consumer's Boot version wins at runtime.
@@ -10,7 +10,8 @@ assertj = "3.27.3"
 plugin-publish = "1.3.1"
 
 [libraries]
-ksp-api = { module = "com.google.devtools.ksp:symbol-processing-api", version.ref = "ksp" }
+# The processor is compiled against the oldest KSP it runs on, the KSP1 of Kotlin 1.8.22 (ADR 0004).
+ksp-api = { module = "com.google.devtools.ksp:symbol-processing-api", version = "1.8.22-1.0.11" }
 ksp-aa-embeddable = { module = "com.google.devtools.ksp:symbol-processing-aa-embeddable", version.ref = "ksp" }
 ksp-common-deps = { module = "com.google.devtools.ksp:symbol-processing-common-deps", version.ref = "ksp" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core-jvm", version = "1.6.4" }
