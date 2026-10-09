@@ -15,6 +15,9 @@ import com.squareup.kotlinpoet.joinToCode
 
 private val MIRROR = ClassName("com.github.cyberpartizan.notnullfork", "Mirror")
 private val NOT_NULL = ClassName("jakarta.validation.constraints", "NotNull")
+private val VALID = ClassName("jakarta.validation", "Valid")
+private val JSON_DESERIALIZE = ClassName("com.fasterxml.jackson.databind.annotation", "JsonDeserialize")
+private val NESTED_MIRROR_DESERIALIZER = ClassName("com.github.cyberpartizan.notnullfork", "NestedMirrorDeserializer")
 
 /**
  * A Request Body property as it appears in the Mirror. It is a `var` in the Mirror if it is one in
@@ -24,20 +27,35 @@ private val NOT_NULL = ClassName("jakarta.validation.constraints", "NotNull")
  * use-site target keeps it; one without is written on the constructor property without a target, so
  * the compiler puts it where it put the Request Body's (this depends on the Kotlin version, which is
  * the same for both).
+ *
+ * A Required or nullable field whose type is a Nested Type ([nested]) is a `Mirror<Nested>?` in the
+ * Mirror. The runtime reads it into the Nested Type's Mirror (unless the app's ObjectMapper reads the
+ * type in its own way), and validation cascades into it.
  */
 internal sealed class MirrorField(
     val name: String,
     val type: TypeName,
     val mutable: Boolean,
     val annotations: List<AnnotationSpec>,
+    val nested: ClassName?,
 ) {
     /** Non-null without a default value: nullable in the Mirror and must not be null. */
-    class Required(name: String, type: TypeName, mutable: Boolean, annotations: List<AnnotationSpec>) :
-        MirrorField(name, type, mutable, annotations)
+    class Required(
+        name: String,
+        type: TypeName,
+        mutable: Boolean,
+        annotations: List<AnnotationSpec>,
+        nested: ClassName? = null,
+    ) : MirrorField(name, type, mutable, annotations, nested)
 
-    /** Nullable without a default value: copied as it is. */
-    class Nullable(name: String, type: TypeName, mutable: Boolean, annotations: List<AnnotationSpec>) :
-        MirrorField(name, type, mutable, annotations)
+    /** Nullable without a default value: copied as it is (a Nested Type becomes its Mirror). */
+    class Nullable(
+        name: String,
+        type: TypeName,
+        mutable: Boolean,
+        annotations: List<AnnotationSpec>,
+        nested: ClassName? = null,
+    ) : MirrorField(name, type, mutable, annotations, nested)
 
     /** Has a default value: copied as it is, with the default value expression as written in the source. */
     class Defaulted(
@@ -46,7 +64,14 @@ internal sealed class MirrorField(
         mutable: Boolean,
         annotations: List<AnnotationSpec>,
         val defaultValue: String,
-    ) : MirrorField(name, type, mutable, annotations)
+    ) : MirrorField(name, type, mutable, annotations, nested = null)
+
+    /** This field with [nested] as its Nested Type. A Defaulted Field keeps the Request Body's type. */
+    fun withNested(nested: ClassName): MirrorField = when (this) {
+        is Required -> Required(name, type, mutable, annotations, nested)
+        is Nullable -> Nullable(name, type, mutable, annotations, nested)
+        is Defaulted -> this
+    }
 }
 
 /** A generated Kotlin source file. */
@@ -82,7 +107,12 @@ internal object MirrorGenerator {
             .addSuperinterface(MIRROR.parameterizedBy(requestBody))
             .addAnnotations(annotations)
         for (field in fields) {
-            val type = if (field is MirrorField.Required) field.type.copy(nullable = true) else field.type
+            val nested = field.nested
+            val type = when {
+                nested != null -> MIRROR.parameterizedBy(nested).copy(nullable = true)
+                field is MirrorField.Required -> field.type.copy(nullable = true)
+                else -> field.type
+            }
             val parameter = ParameterSpec.builder(field.name, type)
             val property = PropertySpec.builder(field.name, type).mutable(field.mutable).initializer("%N", field.name)
             for (annotation in field.annotations) {
@@ -105,6 +135,15 @@ internal object MirrorGenerator {
                 }
                 is MirrorField.Nullable -> Unit
             }
+            if (nested != null) {
+                parameter.addAnnotation(
+                    AnnotationSpec.builder(JSON_DESERIALIZE)
+                        .useSiteTarget(AnnotationSpec.UseSiteTarget.PARAM)
+                        .addMember("using = %T::class", NESTED_MIRROR_DESERIALIZER)
+                        .build(),
+                )
+                property.addAnnotation(AnnotationSpec.builder(VALID).useSiteTarget(AnnotationSpec.UseSiteTarget.FIELD).build())
+            }
             constructor.addParameter(parameter.build())
             mirror.addProperty(property.build())
         }
@@ -116,9 +155,7 @@ internal object MirrorGenerator {
                 .addStatement(
                     "return %T(%L)",
                     requestBody,
-                    fields.map {
-                        if (it is MirrorField.Required) CodeBlock.of("%N = %N!!", it.name, it.name) else CodeBlock.of("%N = %N", it.name, it.name)
-                    }.joinToCode(", "),
+                    fields.map { it.toRequestBodyArgument() }.joinToCode(", "),
                 )
                 .build(),
         )
@@ -127,6 +164,17 @@ internal object MirrorGenerator {
         var text = withImports(file, imports)
         for ((placeholder, defaultValue) in placeholders) text = text.replace(placeholder, defaultValue)
         return GeneratedFile(mirrorName.packageName, mirrorName.simpleName, text)
+    }
+
+    /** `name = <the Request Body's value of this field>`; Required Fields have been checked by now. */
+    private fun MirrorField.toRequestBodyArgument(): CodeBlock {
+        val required = this is MirrorField.Required
+        return when {
+            nested != null && required -> CodeBlock.of("%N = %N!!.toRequestBody()", name, name)
+            nested != null -> CodeBlock.of("%N = %N?.toRequestBody()", name, name)
+            required -> CodeBlock.of("%N = %N!!", name, name)
+            else -> CodeBlock.of("%N = %N", name, name)
+        }
     }
 
     /**

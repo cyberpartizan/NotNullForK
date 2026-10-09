@@ -12,12 +12,17 @@ import com.google.devtools.ksp.symbol.FileLocation
 import com.google.devtools.ksp.symbol.KSAnnotated
 import com.google.devtools.ksp.symbol.KSAnnotation
 import com.google.devtools.ksp.symbol.KSClassDeclaration
+import com.google.devtools.ksp.getConstructors
+import com.google.devtools.ksp.getDeclaredFunctions
 import com.google.devtools.ksp.symbol.KSDeclaration
+import com.google.devtools.ksp.symbol.KSFile
 import com.google.devtools.ksp.symbol.KSPropertyDeclaration
+import com.google.devtools.ksp.symbol.KSTypeAlias
 import com.google.devtools.ksp.symbol.KSValueParameter
 import com.google.devtools.ksp.symbol.Modifier
 import com.google.devtools.ksp.symbol.Origin
 import com.squareup.kotlinpoet.AnnotationSpec
+import com.squareup.kotlinpoet.ClassName
 import com.squareup.kotlinpoet.ksp.toAnnotationSpec
 import com.squareup.kotlinpoet.ksp.toClassName
 import com.squareup.kotlinpoet.ksp.toTypeName
@@ -27,6 +32,8 @@ private const val REQUEST_BODY = "org.springframework.web.bind.annotation.Reques
 private const val JACKSON_PACKAGE_PREFIX = "com.fasterxml.jackson."
 private const val JACKSON_ANNOTATIONS_INSIDE = "com.fasterxml.jackson.annotation.JacksonAnnotationsInside"
 private const val JSON_DESERIALIZE = "com.fasterxml.jackson.databind.annotation.JsonDeserialize"
+private const val JSON_CREATOR = "com.fasterxml.jackson.annotation.JsonCreator"
+private val OWN_WAY_CLASS_ANNOTATIONS = setOf(JSON_DESERIALIZE, "com.fasterxml.jackson.annotation.JsonTypeInfo")
 
 class MirrorProcessorProvider : SymbolProcessorProvider {
     override fun create(environment: SymbolProcessorEnvironment): SymbolProcessor =
@@ -34,40 +41,84 @@ class MirrorProcessorProvider : SymbolProcessorProvider {
 }
 
 /**
- * Generates a Mirror for every Kotlin class used as a `@RequestBody` parameter.
+ * Generates a Mirror for every Kotlin class used as a `@RequestBody` parameter, and, recursively, for
+ * the Nested Types of its Required and nullable fields. Each class gets at most one
+ * Mirror, however many places use it.
  */
 class MirrorProcessor(
     private val codeGenerator: CodeGenerator,
     private val logger: KSPLogger,
 ) : SymbolProcessor {
 
-    private val mirrored = mutableSetOf<String>()
+    /** What each class examined so far looks like in its Mirror, or `null` if it gets none. */
+    private val plans = mutableMapOf<String, MirrorPlan?>()
+    private val generated = mutableSetOf<String>()
 
     override fun process(resolver: Resolver): List<KSAnnotated> {
-        resolver.getSymbolsWithAnnotation(REQUEST_BODY)
-            .filterIsInstance<KSValueParameter>()
-            .mapNotNull { it.type.resolve().declaration as? KSClassDeclaration }
-            .forEach { requestBody ->
-                val name = requestBody.qualifiedName?.asString() ?: return@forEach
-                if (mirrored.add(name) && isSupported(requestBody)) generate(requestBody)
+        // Every class to mirror, with the files of the `@RequestBody` parameters that lead to it.
+        val toMirror = linkedMapOf<String, Pair<KSClassDeclaration, MutableSet<KSFile>>>()
+        for (parameter in resolver.getSymbolsWithAnnotation(REQUEST_BODY).filterIsInstance<KSValueParameter>()) {
+            val requestBody = parameter.type.resolve().declaration.classDeclaration() ?: continue
+            for ((name, mirrored) in withNestedTypes(requestBody)) {
+                toMirror.getOrPut(name) { mirrored to mutableSetOf() }.second += listOfNotNull((parameter.parent as? KSDeclaration)?.containingFile)
             }
+        }
+        for ((name, mirrored) in toMirror) {
+            val (declaration, users) = mirrored
+            if (generated.add(name)) write(declaration, planFor(declaration)!!, users)
+        }
         return emptyList()
     }
 
-    // Only flat classes whose properties are all in the primary constructor are supported so far;
-    // anything else is left to Spring.
+    /** [requestBody] and every Nested Type it reaches that get Mirrors, by qualified name. */
+    private fun withNestedTypes(requestBody: KSClassDeclaration): Map<String, KSClassDeclaration> {
+        val reached = linkedMapOf<String, KSClassDeclaration>()
+        val pending = ArrayDeque(listOf(requestBody))
+        while (pending.isNotEmpty()) {
+            val next = pending.removeFirst()
+            val plan = planFor(next) ?: continue
+            if (reached.putIfAbsent(plan.name, next) == null) pending += plan.fields.mapNotNull { it.nestedType() }
+        }
+        return reached
+    }
+
+    /** The field's Nested Type: the class of its type, if that may be one and gets a Mirror. */
+    private fun PlannedField.nestedType(): KSClassDeclaration? = possiblyNested?.takeIf { planFor(it) != null }
+
+    /** Writes the Mirror of [mirrored]. [users] are the files of the `@RequestBody` parameters that lead to it. */
+    private fun write(mirrored: KSClassDeclaration, plan: MirrorPlan, users: Set<KSFile>) {
+        val fields = plan.fields.map { planned -> planned.nestedType()?.let { planned.field.withNested(it.toClassName()) } ?: planned.field }
+        val file = MirrorGenerator.generate(mirrored.toClassName(), fields, plan.imports, plan.annotations)
+        // The Mirror changes with the class, and with whether its fields' types get Mirrors. The users'
+        // files are included so that KSP processes them again, and so writes this Mirror again, when
+        // any of these change.
+        val sources = (listOf(mirrored) + plan.fields.mapNotNull { it.possiblyNested }).mapNotNull { it.containingFile } + users
+        codeGenerator.createNewFile(Dependencies(aggregating = false, *sources.distinct().toTypedArray()), file.packageName, file.fileName)
+            .bufferedWriter().use { it.write(file.text) }
+    }
+
+    /** What [requestBody] looks like in its Mirror, or `null` (once logged) if it gets none. */
+    private fun planFor(requestBody: KSClassDeclaration): MirrorPlan? {
+        val name = requestBody.qualifiedName?.asString() ?: return null
+        return plans.getOrPut(name) { if (isSupported(requestBody)) plan(requestBody) else null }
+    }
+
+    // Only classes whose properties are all in the primary constructor, and that a Mirror in another
+    // file can construct, are supported so far; anything else is left to Spring.
     private fun isSupported(requestBody: KSClassDeclaration): Boolean {
         val parameters = requestBody.primaryConstructor?.parameters
         val supported = requestBody.origin == Origin.KOTLIN &&
             requestBody.classKind == ClassKind.CLASS &&
             requestBody.typeParameters.isEmpty() &&
+            UNCONSTRUCTIBLE.none { it in requestBody.modifiers } &&
+            Modifier.PRIVATE !in requestBody.primaryConstructor?.modifiers.orEmpty() &&
             parameters != null &&
             parameters.all { it.isVal || it.isVar }
         if (!supported) logger.info("NotNullForK: no Mirror generated for ${requestBody.qualifiedName?.asString()}", requestBody)
         return supported
     }
 
-    private fun generate(requestBody: KSClassDeclaration) {
+    private fun plan(requestBody: KSClassDeclaration): MirrorPlan? {
         if (requestBody.annotations.any { it.qualifiedName() == JSON_DESERIALIZE }) {
             // The Request Body's own deserializer builds the Request Body, not the Mirror.
             return noMirror(requestBody, "it has a class-level @JsonDeserialize")
@@ -96,21 +147,51 @@ class MirrorProcessor(
                     if (unresolvable.isNotEmpty()) {
                         return noMirror(requestBody, "the default value of '$name' refers to ${unresolvable.joinToString { "'$it'" }}")
                     }
-                    MirrorField.Defaulted(name, type, mutable, annotations, defaultValue)
+                    // A Defaulted Field keeps the Request Body's type, even if that type has a Mirror.
+                    PlannedField(MirrorField.Defaulted(name, type, mutable, annotations, defaultValue), possiblyNested = null)
                 }
-                type.isNullable -> MirrorField.Nullable(name, type, mutable, annotations)
-                else -> MirrorField.Required(name, type, mutable, annotations)
+                type.isNullable -> PlannedField(MirrorField.Nullable(name, type, mutable, annotations), possiblyNestedTypeOf(parameter, annotations))
+                else -> PlannedField(MirrorField.Required(name, type, mutable, annotations), possiblyNestedTypeOf(parameter, annotations))
             }
         }
+        return MirrorPlan(requestBody.qualifiedName!!.asString(), fields, source?.imports.orEmpty(), requestBody.annotations.toSpecs())
+    }
 
-        val file = MirrorGenerator.generate(
-            requestBody.toClassName(),
-            fields,
-            source?.imports.orEmpty(),
-            requestBody.annotations.toSpecs(),
-        )
-        val dependencies = Dependencies(aggregating = false, *listOfNotNull(requestBody.containingFile).toTypedArray())
-        codeGenerator.createNewFile(dependencies, file.packageName, file.fileName).bufferedWriter().use { it.write(file.text) }
+    /**
+     * The class of [parameter]'s type if it may be a Nested Type: a class of this compilation. It is
+     * one if it gets a Mirror. Library types such as `String` or `List` are not, nor is a type that the
+     * property's own `@JsonDeserialize` ([annotations]) reads, nor one that Jackson reads in its own way
+     * (see [isReadByJacksonItsOwnWay]); those are left as they are, without a warning.
+     */
+    private fun possiblyNestedTypeOf(parameter: KSValueParameter, annotations: List<AnnotationSpec>): KSClassDeclaration? {
+        if (annotations.any { (it.typeName as? ClassName)?.canonicalName == JSON_DESERIALIZE }) return null
+        val type = parameter.type.resolve()
+        if (type.arguments.isNotEmpty()) return null
+        val declaration = type.declaration.classDeclaration() ?: return null
+        return declaration.takeIf {
+            it.origin == Origin.KOTLIN && it.classKind == ClassKind.CLASS && !it.isReadByJacksonItsOwnWay()
+        }
+    }
+
+    /**
+     * A class that Jackson builds through a `@JsonCreator`, reads with its own `@JsonDeserialize`, or
+     * reads as a subtype (`@JsonTypeInfo` on it or a supertype): its Mirror would not be read the same way.
+     */
+    private fun KSClassDeclaration.isReadByJacksonItsOwnWay(): Boolean {
+        val creators = getConstructors() + declarations.filterIsInstance<KSClassDeclaration>()
+            .filter { it.isCompanionObject }.flatMap { it.getDeclaredFunctions() }
+        if (creators.any { creator -> creator.annotations.any { it.qualifiedName() == JSON_CREATOR } }) return true
+        val types = generateSequence(listOf(this)) { classes ->
+            classes.flatMap { c -> c.superTypes.mapNotNull { it.resolve().declaration.classDeclaration() } }.takeIf { it.isNotEmpty() }
+        }.flatten()
+        return types.any { c -> c.annotations.any { it.qualifiedName() in OWN_WAY_CLASS_ANNOTATIONS } }
+    }
+
+    /** This class, or the class this type alias stands for. */
+    private fun KSDeclaration.classDeclaration(): KSClassDeclaration? = when (this) {
+        is KSClassDeclaration -> this
+        is KSTypeAlias -> type.resolve().declaration.classDeclaration()
+        else -> null
     }
 
     /**
@@ -140,10 +221,27 @@ class MirrorProcessor(
         qualifiedName()?.startsWith(JACKSON_PACKAGE_PREFIX) == true ||
             annotationType.resolve().declaration.annotations.any { it.qualifiedName() == JACKSON_ANNOTATIONS_INSIDE }
 
-    private fun noMirror(requestBody: KSClassDeclaration, reason: String) {
+    private fun noMirror(requestBody: KSClassDeclaration, reason: String): MirrorPlan? {
         logger.warn("NotNullForK: no Mirror generated for ${requestBody.qualifiedName!!.asString()}: $reason", requestBody)
+        return null
+    }
+
+    private companion object {
+        /** Classes a Mirror can't construct. */
+        val UNCONSTRUCTIBLE = listOf(Modifier.ABSTRACT, Modifier.SEALED, Modifier.INNER, Modifier.VALUE, Modifier.INLINE, Modifier.PRIVATE)
     }
 }
+
+/** What a Request Body or Nested Type looks like in its Mirror, before it is known which of its field types have Mirrors. */
+private class MirrorPlan(
+    val name: String,
+    val fields: List<PlannedField>,
+    val imports: List<String>,
+    val annotations: List<AnnotationSpec>,
+)
+
+/** A Mirror field, and the class of its type if that may be a Nested Type. */
+private class PlannedField(val field: MirrorField, val possiblyNested: KSClassDeclaration?)
 
 /**
  * The default values of a Request Body's primary constructor, as written in its source file, and

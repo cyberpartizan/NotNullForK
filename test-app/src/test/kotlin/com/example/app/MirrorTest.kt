@@ -97,6 +97,36 @@ class MirrorTest {
         assertThat(annotations.map { it.annotationClass }).doesNotContain(Audited::class).contains(Internal::class)
     }
 
+    @Test
+    fun `a Nested Type gets one Mirror, which the Mirrors that use it hold and map to the Request Body`() {
+        val country = mirrorOf("Country").primaryConstructor!!.call("NO")
+        val city = mirrorOf("City").primaryConstructor!!.call("Oslo", country)
+        val address = mirrorOf("Address").primaryConstructor!!.call("Main St", city, null)
+        val order = mirrorOf("PlaceOrderRequest").primaryConstructor!!
+        val mirror = order.callBy(
+            order.parameters.filter { it.name != "packaging" }
+                .associateWith { if (it.name == "item") "book" else if (it.name == "shippingAddress") address else null },
+        ) as Mirror<*>
+
+        for ((requestBody, name) in listOf("PlaceOrderRequest" to "shippingAddress", "RegisterCustomerRequest" to "address")) {
+            assertThat(property(mirrorOf(requestBody), name).returnType.toString())
+                .isEqualTo("com.github.cyberpartizan.notnullfork.Mirror<com.example.app.Address>?")
+        }
+        assertThat(mirror.toRequestBody()).isEqualTo(
+            PlaceOrderRequest(
+                item = "book",
+                shippingAddress = Address(street = "Main St", city = City(name = "Oslo", country = Country(code = "NO")), note = null),
+                billingAddress = null,
+                coupon = null,
+            ),
+        )
+    }
+
+    @Test
+    fun `a Defaulted Field of a Nested Type keeps the Request Body's type`() {
+        assertThat(property(mirrorOf("PlaceOrderRequest"), "packaging").returnType.classifier).isEqualTo(Packaging::class)
+    }
+
     private fun mirrorOf(requestBody: String): KClass<*> = Class.forName("com.example.app.generated.${requestBody}Mirror").kotlin
 
     /** `(where, constraint annotation name)` for every Bean Validation constraint on [type]. */
