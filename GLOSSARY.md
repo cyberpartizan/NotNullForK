@@ -21,7 +21,7 @@ A Request Body property that has a default value. The plugin leaves it untouched
 _Avoid_: optional field
 
 **Nested Type**:
-A Kotlin class used as the type of a Required Field or nullable field of a Request Body, at any depth, that gets its own Mirror. The Request Body's Mirror holds the Nested Type's Mirror and checks its Required Fields too.
+A Kotlin class used as the type of a Required Field or nullable field of a Request Body, or as the element type of such a list or set or the value type of such a map, at any depth, that gets its own Mirror. The Request Body's Mirror holds the Nested Type's Mirror and checks its Required Fields too.
 _Avoid_: nested Request Body, sub-DTO
 
 **Opt-out**:

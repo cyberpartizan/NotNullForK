@@ -18,6 +18,12 @@ private val NOT_NULL = ClassName("jakarta.validation.constraints", "NotNull")
 private val VALID = ClassName("jakarta.validation", "Valid")
 private val JSON_DESERIALIZE = ClassName("com.fasterxml.jackson.databind.annotation", "JsonDeserialize")
 private val NESTED_MIRROR_DESERIALIZER = ClassName("com.github.cyberpartizan.notnullfork", "NestedMirrorDeserializer")
+private val ELEMENTS_NOT_NULL = ClassName("com.github.cyberpartizan.notnullfork.elements", "NotNull")
+private val LIST = ClassName("kotlin.collections", "List")
+private val MAP = ClassName("kotlin.collections", "Map")
+private val ARRAY_LIST = ClassName("kotlin.collections", "ArrayList")
+private val LINKED_HASH_SET = ClassName("kotlin.collections", "LinkedHashSet")
+private val LINKED_HASH_MAP = ClassName("kotlin.collections", "LinkedHashMap")
 
 /**
  * A Request Body property as it appears in the Mirror. It is a `var` in the Mirror if it is one in
@@ -31,6 +37,9 @@ private val NESTED_MIRROR_DESERIALIZER = ClassName("com.github.cyberpartizan.not
  * A Required or nullable field whose type is a Nested Type ([nested]) is a `Mirror<Nested>?` in the
  * Mirror. The runtime reads it into the Nested Type's Mirror (unless the app's ObjectMapper reads the
  * type in its own way), and validation cascades into it.
+ *
+ * A Required or nullable list, set or map whose elements are checked or mapped one by one has a
+ * [container]; [nested] is then the Nested Type of its elements (values of a map), if they have one.
  */
 internal sealed class MirrorField(
     val name: String,
@@ -38,6 +47,7 @@ internal sealed class MirrorField(
     val mutable: Boolean,
     val annotations: List<AnnotationSpec>,
     val nested: ClassName?,
+    val container: Container?,
 ) {
     /** Non-null without a default value: nullable in the Mirror and must not be null. */
     class Required(
@@ -46,7 +56,8 @@ internal sealed class MirrorField(
         mutable: Boolean,
         annotations: List<AnnotationSpec>,
         nested: ClassName? = null,
-    ) : MirrorField(name, type, mutable, annotations, nested)
+        container: Container? = null,
+    ) : MirrorField(name, type, mutable, annotations, nested, container)
 
     /** Nullable without a default value: copied as it is (a Nested Type becomes its Mirror). */
     class Nullable(
@@ -55,7 +66,8 @@ internal sealed class MirrorField(
         mutable: Boolean,
         annotations: List<AnnotationSpec>,
         nested: ClassName? = null,
-    ) : MirrorField(name, type, mutable, annotations, nested)
+        container: Container? = null,
+    ) : MirrorField(name, type, mutable, annotations, nested, container)
 
     /** Has a default value: copied as it is, with the default value expression as written in the source. */
     class Defaulted(
@@ -64,14 +76,27 @@ internal sealed class MirrorField(
         mutable: Boolean,
         annotations: List<AnnotationSpec>,
         val defaultValue: String,
-    ) : MirrorField(name, type, mutable, annotations, nested = null)
+    ) : MirrorField(name, type, mutable, annotations, nested = null, container = null)
 
-    /** This field with [nested] as its Nested Type. A Defaulted Field keeps the Request Body's type. */
+    /**
+     * This field with [nested] as its Nested Type (that of its elements, if it has a [container]). A
+     * Defaulted Field keeps the Request Body's type.
+     */
     fun withNested(nested: ClassName): MirrorField = when (this) {
-        is Required -> Required(name, type, mutable, annotations, nested)
-        is Nullable -> Nullable(name, type, mutable, annotations, nested)
+        is Required -> Required(name, type, mutable, annotations, nested, container)
+        is Nullable -> Nullable(name, type, mutable, annotations, nested, container)
         is Defaulted -> this
     }
+}
+
+/**
+ * How a list, set or map field of [element]s (values of a map, whose keys are [key]s) is mirrored. In
+ * the Mirror it is a `List` (of a list or set) or a `Map` whose elements are nullable, so that Jackson
+ * reads `null` elements; they must not be null if [elementRequired]. It is mapped to a new `ArrayList`,
+ * `LinkedHashSet` or `LinkedHashMap` of the Request Body's element type, in the order of the JSON.
+ */
+internal class Container(val kind: Kind, val key: TypeName?, val element: TypeName, val elementRequired: Boolean) {
+    enum class Kind { LIST, SET, MAP }
 }
 
 /** A generated Kotlin source file. */
@@ -108,11 +133,8 @@ internal object MirrorGenerator {
             .addAnnotations(annotations)
         for (field in fields) {
             val nested = field.nested
-            val type = when {
-                nested != null -> MIRROR.parameterizedBy(nested).copy(nullable = true)
-                field is MirrorField.Required -> field.type.copy(nullable = true)
-                else -> field.type
-            }
+            val container = field.container
+            val type = field.mirrorType()
             val parameter = ParameterSpec.builder(field.name, type)
             val property = PropertySpec.builder(field.name, type).mutable(field.mutable).initializer("%N", field.name)
             for (annotation in field.annotations) {
@@ -135,11 +157,14 @@ internal object MirrorGenerator {
                 }
                 is MirrorField.Nullable -> Unit
             }
+            if (container?.elementRequired == true) {
+                property.addAnnotation(AnnotationSpec.builder(ELEMENTS_NOT_NULL).useSiteTarget(AnnotationSpec.UseSiteTarget.FIELD).build())
+            }
             if (nested != null) {
                 parameter.addAnnotation(
                     AnnotationSpec.builder(JSON_DESERIALIZE)
                         .useSiteTarget(AnnotationSpec.UseSiteTarget.PARAM)
-                        .addMember("using = %T::class", NESTED_MIRROR_DESERIALIZER)
+                        .addMember(if (container != null) "contentUsing = %T::class" else "using = %T::class", NESTED_MIRROR_DESERIALIZER)
                         .build(),
                 )
                 property.addAnnotation(AnnotationSpec.builder(VALID).useSiteTarget(AnnotationSpec.UseSiteTarget.FIELD).build())
@@ -166,9 +191,44 @@ internal object MirrorGenerator {
         return GeneratedFile(mirrorName.packageName, mirrorName.simpleName, text)
     }
 
+    private fun MirrorField.mirrorType(): TypeName {
+        val nested = nested
+        val container = container
+        return when {
+            container != null -> {
+                val element = (nested?.let { MIRROR.parameterizedBy(it) } ?: container.element).copy(nullable = true)
+                val mirrored = when (container.kind) {
+                    Container.Kind.LIST, Container.Kind.SET -> LIST.parameterizedBy(element)
+                    Container.Kind.MAP -> MAP.parameterizedBy(container.key!!, element)
+                }
+                mirrored.copy(nullable = true)
+            }
+            nested != null -> MIRROR.parameterizedBy(nested).copy(nullable = true)
+            this is MirrorField.Required -> type.copy(nullable = true)
+            else -> type
+        }
+    }
+
     /** `name = <the Request Body's value of this field>`; Required Fields have been checked by now. */
     private fun MirrorField.toRequestBodyArgument(): CodeBlock {
         val required = this is MirrorField.Required
+        val container = container
+        if (container != null) {
+            val value = if (container.kind == Container.Kind.MAP) "it.value" else "it"
+            val element = when {
+                nested != null && container.elementRequired -> "$value!!.toRequestBody()"
+                nested != null -> "$value?.toRequestBody()"
+                container.elementRequired -> "$value!!"
+                else -> value
+            }
+            val receiver = if (required) "%N!!" else "%N?"
+            val (function, target) = when (container.kind) {
+                Container.Kind.LIST -> "mapTo" to ARRAY_LIST.parameterizedBy(container.element)
+                Container.Kind.SET -> "mapTo" to LINKED_HASH_SET.parameterizedBy(container.element)
+                Container.Kind.MAP -> "mapValuesTo" to LINKED_HASH_MAP.parameterizedBy(container.key!!, container.element)
+            }
+            return CodeBlock.of("%N = $receiver.$function(%T())·{ $element }", name, name, target)
+        }
         return when {
             nested != null && required -> CodeBlock.of("%N = %N!!.toRequestBody()", name, name)
             nested != null -> CodeBlock.of("%N = %N?.toRequestBody()", name, name)

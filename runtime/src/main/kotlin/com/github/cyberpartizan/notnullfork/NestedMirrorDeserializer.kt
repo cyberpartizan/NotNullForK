@@ -9,7 +9,8 @@ import com.fasterxml.jackson.databind.deser.BeanDeserializerBase
 import com.fasterxml.jackson.databind.deser.ContextualDeserializer
 
 /**
- * Reads a Mirror property of type `Mirror<T>`, where `T` is a Nested Type. Generated Mirrors use it.
+ * Reads a Mirror property of type `Mirror<T>`, where `T` is a Nested Type, or (as `contentUsing`) the
+ * `Mirror<T>` elements of a list or the values of a map property. Generated Mirrors use it.
  *
  * If the app's ObjectMapper reads `T` as a bean, the property is read into `T`'s Mirror, so that its
  * Required Fields are checked too. If the ObjectMapper has its own deserializer for `T` (e.g. from a
@@ -19,7 +20,9 @@ import com.fasterxml.jackson.databind.deser.ContextualDeserializer
 class NestedMirrorDeserializer : JsonDeserializer<Mirror<*>>(), ContextualDeserializer {
 
     override fun createContextual(context: DeserializationContext, property: BeanProperty?): JsonDeserializer<*> {
-        val mirrorType = property?.type ?: context.contextualType
+        // As the `contentUsing` of a list or map property, the contextual type is the element type.
+        val mirrorType = context.contextualType?.takeIf { it.isTypeOrSubTypeOf(Mirror::class.java) } ?: property?.type
+            ?: return context.reportBadDefinition(Mirror::class.java, "NotNullForK: no type for NestedMirrorDeserializer")
         val nestedType = mirrorType.containedType(0)
             ?: return context.reportBadDefinition(mirrorType, "NotNullForK: $mirrorType has no type argument")
         return ForProperty(nestedType, property)

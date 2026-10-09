@@ -17,10 +17,12 @@ import com.google.devtools.ksp.getDeclaredFunctions
 import com.google.devtools.ksp.symbol.KSDeclaration
 import com.google.devtools.ksp.symbol.KSFile
 import com.google.devtools.ksp.symbol.KSPropertyDeclaration
+import com.google.devtools.ksp.symbol.KSType
 import com.google.devtools.ksp.symbol.KSTypeAlias
 import com.google.devtools.ksp.symbol.KSValueParameter
 import com.google.devtools.ksp.symbol.Modifier
 import com.google.devtools.ksp.symbol.Origin
+import com.google.devtools.ksp.symbol.Variance
 import com.squareup.kotlinpoet.AnnotationSpec
 import com.squareup.kotlinpoet.ClassName
 import com.squareup.kotlinpoet.ksp.toAnnotationSpec
@@ -150,22 +152,62 @@ class MirrorProcessor(
                     // A Defaulted Field keeps the Request Body's type, even if that type has a Mirror.
                     PlannedField(MirrorField.Defaulted(name, type, mutable, annotations, defaultValue), possiblyNested = null)
                 }
-                type.isNullable -> PlannedField(MirrorField.Nullable(name, type, mutable, annotations), possiblyNestedTypeOf(parameter, annotations))
-                else -> PlannedField(MirrorField.Required(name, type, mutable, annotations), possiblyNestedTypeOf(parameter, annotations))
+                else -> {
+                    val (container, possiblyNested) = containerAndNestedTypeOf(parameter, annotations)
+                    val field = if (type.isNullable) {
+                        MirrorField.Nullable(name, type, mutable, annotations, container = container)
+                    } else {
+                        MirrorField.Required(name, type, mutable, annotations, container = container)
+                    }
+                    PlannedField(field, possiblyNested)
+                }
             }
         }
         return MirrorPlan(requestBody.qualifiedName!!.asString(), fields, source?.imports.orEmpty(), requestBody.annotations.toSpecs())
     }
 
     /**
-     * The class of [parameter]'s type if it may be a Nested Type: a class of this compilation. It is
-     * one if it gets a Mirror. Library types such as `String` or `List` are not, nor is a type that the
-     * property's own `@JsonDeserialize` ([annotations]) reads, nor one that Jackson reads in its own way
-     * (see [isReadByJacksonItsOwnWay]); those are left as they are, without a warning.
+     * The [Container] of a Required or nullable list, set or map field whose elements (values of a map)
+     * are non-null or may be Nested Types, and the class of the field's type (of its elements, for a
+     * container) if it may be a Nested Type.
+     *
+     * A field that the property's own `@JsonDeserialize` ([annotations]) reads is left as it is. Only
+     * the field's own list, set or map is a container: a list in a list is left as it is.
      */
-    private fun possiblyNestedTypeOf(parameter: KSValueParameter, annotations: List<AnnotationSpec>): KSClassDeclaration? {
-        if (annotations.any { (it.typeName as? ClassName)?.canonicalName == JSON_DESERIALIZE }) return null
-        val type = parameter.type.resolve()
+    private fun containerAndNestedTypeOf(
+        parameter: KSValueParameter,
+        annotations: List<AnnotationSpec>,
+    ): Pair<Container?, KSClassDeclaration?> {
+        if (annotations.any { (it.typeName as? ClassName)?.canonicalName == JSON_DESERIALIZE }) return null to null
+        val type = parameter.type.resolve().expanded()
+        val kind = CONTAINERS[(type.declaration as? KSClassDeclaration)?.qualifiedName?.asString()]
+            ?: return null to possiblyNestedTypeOf(type)
+        val arguments = type.arguments
+        if (arguments.any { it.variance != Variance.INVARIANT }) return null to null
+        val element = arguments.last().type!!
+        val elementType = element.resolve().expanded()
+        val possiblyNested = possiblyNestedTypeOf(elementType)
+        if (elementType.isMarkedNullable && possiblyNested == null) return null to null
+        // Type annotations on the type arguments (e.g. constraints) are not copied to the Mirror.
+        val key = arguments.takeIf { kind == Container.Kind.MAP }?.first()?.type?.toTypeName()?.copy(annotations = emptyList())
+        val container = Container(kind, key, element.toTypeName().copy(annotations = emptyList()), !elementType.isMarkedNullable)
+        return container to possiblyNested
+    }
+
+    /** The type a non-generic type alias stands for (nullable if either is), or this type. */
+    private fun KSType.expanded(): KSType {
+        val alias = declaration as? KSTypeAlias ?: return this
+        if (alias.typeParameters.isNotEmpty()) return this
+        val target = alias.type.resolve().expanded()
+        return if (isMarkedNullable) target.makeNullable() else target
+    }
+
+    /**
+     * The class of [type] if it may be a Nested Type: a class of this compilation. It is one if it gets
+     * a Mirror. Library types such as `String` or `List` are not, nor is one that Jackson reads in its
+     * own way (see [isReadByJacksonItsOwnWay]); those are left as they are, without a warning.
+     */
+    private fun possiblyNestedTypeOf(type: KSType): KSClassDeclaration? {
         if (type.arguments.isNotEmpty()) return null
         val declaration = type.declaration.classDeclaration() ?: return null
         return declaration.takeIf {
@@ -229,6 +271,18 @@ class MirrorProcessor(
     private companion object {
         /** Classes a Mirror can't construct. */
         val UNCONSTRUCTIBLE = listOf(Modifier.ABSTRACT, Modifier.SEALED, Modifier.INNER, Modifier.VALUE, Modifier.INLINE, Modifier.PRIVATE)
+
+        /** The collection and map types whose elements are checked, or mapped, one by one. */
+        val CONTAINERS = mapOf(
+            "kotlin.collections.Collection" to Container.Kind.LIST,
+            "kotlin.collections.MutableCollection" to Container.Kind.LIST,
+            "kotlin.collections.List" to Container.Kind.LIST,
+            "kotlin.collections.MutableList" to Container.Kind.LIST,
+            "kotlin.collections.Set" to Container.Kind.SET,
+            "kotlin.collections.MutableSet" to Container.Kind.SET,
+            "kotlin.collections.Map" to Container.Kind.MAP,
+            "kotlin.collections.MutableMap" to Container.Kind.MAP,
+        )
     }
 }
 
