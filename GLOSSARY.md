@@ -25,5 +25,5 @@ A Kotlin class used as the type of a Required Field or nullable field of a Reque
 _Avoid_: nested Request Body, sub-DTO
 
 **Opt-out**:
-A marker on a Request Body that stops the plugin from handling it.
+A marker on a Request Body that stops the plugin from handling it. A class with an Opt-out gets no Mirror, so it is not a Nested Type either.
 _Avoid_: exclusion, skip

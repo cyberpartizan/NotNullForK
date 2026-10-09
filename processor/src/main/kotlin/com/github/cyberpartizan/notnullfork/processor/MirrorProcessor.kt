@@ -35,6 +35,7 @@ private const val JACKSON_PACKAGE_PREFIX = "com.fasterxml.jackson."
 private const val JACKSON_ANNOTATIONS_INSIDE = "com.fasterxml.jackson.annotation.JacksonAnnotationsInside"
 private const val JSON_DESERIALIZE = "com.fasterxml.jackson.databind.annotation.JsonDeserialize"
 private const val JSON_CREATOR = "com.fasterxml.jackson.annotation.JsonCreator"
+private const val OPT_OUT = "com.github.cyberpartizan.notnullfork.NotNullForKIgnore"
 private val OWN_WAY_CLASS_ANNOTATIONS = setOf(JSON_DESERIALIZE, "com.fasterxml.jackson.annotation.JsonTypeInfo")
 
 class MirrorProcessorProvider : SymbolProcessorProvider {
@@ -99,10 +100,22 @@ class MirrorProcessor(
             .bufferedWriter().use { it.write(file.text) }
     }
 
-    /** What [requestBody] looks like in its Mirror, or `null` (once logged) if it gets none. */
+    /**
+     * What [requestBody] looks like in its Mirror, or `null` (once logged) if it gets none. A class with
+     * an Opt-out gets none, whether it is used as a Request Body or as a possible Nested Type.
+     */
     private fun planFor(requestBody: KSClassDeclaration): MirrorPlan? {
         val name = requestBody.qualifiedName?.asString() ?: return null
-        return plans.getOrPut(name) { if (isSupported(requestBody)) plan(requestBody) else null }
+        return plans.getOrPut(name) {
+            when {
+                requestBody.annotations.any { it.qualifiedName() == OPT_OUT } -> {
+                    logger.info("NotNullForK: no Mirror generated for $name: it has @NotNullForKIgnore", requestBody)
+                    null
+                }
+                isSupported(requestBody) -> plan(requestBody)
+                else -> null
+            }
+        }
     }
 
     // Only classes whose properties are all in the primary constructor, and that a Mirror in another
