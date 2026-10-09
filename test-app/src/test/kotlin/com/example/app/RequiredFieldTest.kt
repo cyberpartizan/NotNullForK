@@ -7,6 +7,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.http.MediaType
+import org.springframework.http.converter.HttpMessageNotReadableException
 import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.MvcResult
 import org.springframework.test.web.servlet.post
@@ -72,6 +73,15 @@ class RequiredFieldTest(@Autowired private val mockMvc: MockMvc) {
         val result = post("/users", "name=Ann", MediaType.TEXT_PLAIN)
 
         assertThat(result.response.status).isEqualTo(415)
+    }
+
+    @Test
+    fun `a left-out body without a content type returns a 400 for the missing body`() {
+        val result = mockMvc.post("/users").andReturn()
+
+        assertThat(result.response.status).isEqualTo(400)
+        assertThat(result.resolvedException).isInstanceOf(HttpMessageNotReadableException::class.java)
+            .hasMessageStartingWith("Required request body is missing")
     }
 
     private fun post(path: String, json: String, type: MediaType = MediaType.APPLICATION_JSON): MvcResult =

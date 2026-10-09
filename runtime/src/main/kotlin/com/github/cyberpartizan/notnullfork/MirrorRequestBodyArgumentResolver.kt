@@ -49,29 +49,40 @@ internal class MirrorRequestBodyArgumentResolver(
     ): Any? {
         val mirrorClass = Mirrors.mirrorClassFor(parameter.nestedParameterType)!!
         val inputMessage = ServletServerHttpRequest(webRequest.getNativeRequest(HttpServletRequest::class.java)!!)
-        val mirror = read(inputMessage, mirrorClass) ?: return missingBody(parameter, inputMessage)
+        val mirror = read(inputMessage, mirrorClass)
+        if (mirror == null) checkBodyNotRequired(parameter, inputMessage)
         val name = Conventions.getVariableNameForParameter(parameter)
 
-        checkRequiredFields(mirror, name, parameter)
-        val requestBody = mirror.toRequestBody()
-        validateIfApplicable(requestBody, name, parameter, mavContainer, webRequest, binderFactory)
+        val requestBody = mirror?.let {
+            checkRequiredFields(it, name, parameter)
+            it.toRequestBody()
+        }
+        bindAndValidate(requestBody, name, parameter, mavContainer, webRequest, binderFactory)
         return requestBody
     }
 
-    /** Reads the body into a Mirror, or returns `null` if the body is empty. */
+    /**
+     * Reads the body into a Mirror, or returns `null` if the body is empty. As in Spring, an empty body
+     * without a content type is not an unsupported media type.
+     */
     private fun read(inputMessage: HttpInputMessage, mirrorClass: Class<out Mirror<*>>): Mirror<*>? {
-        val contentType = inputMessage.headers.contentType ?: MediaType.APPLICATION_OCTET_STREAM
-        if (!converter.canRead(mirrorClass, contentType)) {
-            throw HttpMediaTypeNotSupportedException(contentType, converter.supportedMediaTypes)
-        }
+        val contentType = inputMessage.headers.contentType
         return try {
             val body = PushbackInputStream(inputMessage.body)
             val first = body.read()
-            if (first == -1) {
-                null
-            } else {
-                body.unread(first)
-                converter.objectMapper.readValue(body, mirrorClass)
+            when {
+                converter.canRead(mirrorClass, contentType ?: MediaType.APPLICATION_OCTET_STREAM) ->
+                    if (first == -1) {
+                        null
+                    } else {
+                        body.unread(first)
+                        converter.objectMapper.readValue(body, mirrorClass)
+                    }
+                contentType == null && first == -1 -> null
+                else -> throw HttpMediaTypeNotSupportedException(
+                    contentType ?: MediaType.APPLICATION_OCTET_STREAM,
+                    converter.supportedMediaTypes,
+                )
             }
         } catch (e: JsonProcessingException) {
             throw HttpMessageNotReadableException("JSON parse error: ${e.originalMessage}", e, inputMessage)
@@ -80,14 +91,14 @@ internal class MirrorRequestBodyArgumentResolver(
         }
     }
 
-    private fun missingBody(parameter: MethodParameter, inputMessage: HttpInputMessage): Any? {
-        if (parameter.getParameterAnnotation(RequestBody::class.java)!!.required) {
+    // As in Spring, a nullable parameter is optional even with `required = true`.
+    private fun checkBodyNotRequired(parameter: MethodParameter, inputMessage: HttpInputMessage) {
+        if (parameter.getParameterAnnotation(RequestBody::class.java)!!.required && !parameter.isOptional) {
             throw HttpMessageNotReadableException(
                 "Required request body is missing: ${parameter.executable.toGenericString()}",
                 inputMessage,
             )
         }
-        return null
     }
 
     private fun checkRequiredFields(mirror: Mirror<*>, name: String, parameter: MethodParameter) {
@@ -96,9 +107,10 @@ internal class MirrorRequestBodyArgumentResolver(
         if (result.hasErrors()) throw MethodArgumentNotValidException(parameter, result)
     }
 
-    // Same as Spring's AbstractMessageConverterMethodArgumentResolver.validateIfApplicable.
-    private fun validateIfApplicable(
-        requestBody: Any,
+    // Same as Spring's RequestResponseBodyMethodProcessor: the binding result is also added for a missing body,
+    // and the validation is AbstractMessageConverterMethodArgumentResolver.validateIfApplicable.
+    private fun bindAndValidate(
+        requestBody: Any?,
         name: String,
         parameter: MethodParameter,
         mavContainer: ModelAndViewContainer?,
@@ -110,7 +122,7 @@ internal class MirrorRequestBodyArgumentResolver(
         val hints = parameter.parameterAnnotations.firstNotNullOfOrNull {
             ValidationAnnotationUtils.determineValidationHints(it)
         }
-        if (hints != null) {
+        if (requestBody != null && hints != null) {
             binder.validate(*hints)
             if (binder.bindingResult.hasErrors() && isBindExceptionRequired(parameter)) {
                 throw MethodArgumentNotValidException(parameter, binder.bindingResult)
