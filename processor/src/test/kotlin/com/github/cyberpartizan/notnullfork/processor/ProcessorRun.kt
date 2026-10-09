@@ -8,13 +8,22 @@ import com.google.devtools.ksp.symbol.KSNode
 import java.io.File
 import java.nio.file.Files
 
-/** What the build shows when the processor runs: its messages by level, as `file:line: message`. */
-class ProcessorRun(val warnings: List<String>, val infos: List<String>, val errors: List<String>)
+/**
+ * What the build shows when the processor runs: its messages by level, as `file:line: message`, and
+ * the Kotlin files it generates, by path under the output root (`com/example/generated/AMirror.kt`).
+ */
+class ProcessorRun(
+    val warnings: List<String>,
+    val infos: List<String>,
+    val errors: List<String>,
+    val generated: Map<String, String>,
+)
 
 /**
  * Runs the Mirror processor with KSP on sample sources, as the build of a module that applies the
  * plugin would. [sources] maps a path under the source root (`.kt` or `.java`) to its content. The
- * samples can use Spring Web, Jackson, the Kotlin standard library and the NotNullForK runtime.
+ * samples can use Spring Web, Jackson, the Kotlin standard library, the NotNullForK runtime, and the
+ * classes of `src/sampleLibrary` (compiled in another module).
  */
 fun runProcessor(vararg sources: Pair<String, String>): ProcessorRun {
     val dir = Files.createTempDirectory("not-null-for-k-ksp").toFile()
@@ -43,7 +52,10 @@ fun runProcessor(vararg sources: Pair<String, String>): ProcessorRun {
         }.build()
         val exitCode = KotlinSymbolProcessing(config, listOf(MirrorProcessorProvider()), logger).execute()
         check(exitCode == KotlinSymbolProcessing.ExitCode.OK || logger.errors.isNotEmpty()) { "KSP failed: $exitCode" }
-        return ProcessorRun(logger.warnings, logger.infos, logger.errors)
+        val kotlinOutput = File(dir, "out/kotlin")
+        val generated = kotlinOutput.walk().filter { it.isFile }
+            .associate { it.relativeTo(kotlinOutput).invariantSeparatorsPath to it.readText() }
+        return ProcessorRun(logger.warnings, logger.infos, logger.errors, generated)
     } finally {
         dir.deleteRecursively()
     }

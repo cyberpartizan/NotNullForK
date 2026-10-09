@@ -29,11 +29,17 @@ internal object Mirrors {
         val simpleNames = requestBodyClass.name.removePrefix("$packageName.").replace('$', '_')
         val mirrorName = listOf(packageName, "generated").filter { it.isNotEmpty() }.joinToString(".") +
             ".${simpleNames}Mirror"
-        val mirrorClass = try {
-            Class.forName(mirrorName, false, requestBodyClass.classLoader)
-        } catch (e: ClassNotFoundException) {
-            return null
-        }
-        return mirrorClass.takeIf { Mirror::class.java.isAssignableFrom(it) }
+        // The Mirror of a library's Request Body is in the app, whose class loader may be a child of the
+        // library's (e.g. with Spring Boot DevTools).
+        val loaders = listOfNotNull(requestBodyClass.classLoader, Thread.currentThread().contextClassLoader).distinct()
+        return loaders.firstNotNullOfOrNull { loadOrNull(mirrorName, it) }?.takeIf { Mirror::class.java.isAssignableFrom(it) }
     }
+
+    /** The class [name] as [loader] sees it, or `null` if it can't find it. */
+    private fun loadOrNull(name: String, loader: ClassLoader): Class<*>? =
+        try {
+            Class.forName(name, false, loader)
+        } catch (e: ClassNotFoundException) {
+            null
+        }
 }

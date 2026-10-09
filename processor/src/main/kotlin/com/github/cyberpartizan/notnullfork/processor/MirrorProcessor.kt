@@ -14,6 +14,8 @@ import com.google.devtools.ksp.symbol.KSAnnotation
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.getConstructors
 import com.google.devtools.ksp.getDeclaredFunctions
+import com.google.devtools.ksp.getVisibility
+import com.google.devtools.ksp.symbol.Visibility
 import com.google.devtools.ksp.symbol.KSDeclaration
 import com.google.devtools.ksp.symbol.KSFile
 import com.google.devtools.ksp.symbol.KSPropertyDeclaration
@@ -120,13 +122,21 @@ class MirrorProcessor(
 
     /**
      * Why [requestBody] gets no Mirror, if it gets none whatever its fields are: it has an Opt-out, it
-     * comes from a library, or it is a shape that the plugin can't handle, which is left to Spring with
-     * a build warning.
+     * is a Java class or a class of the Kotlin standard library, or it is a shape that the plugin can't
+     * handle, which is left to Spring with a build warning.
+     *
+     * A Kotlin class compiled in another module or library gets a Mirror in this module as a class of
+     * this module would.
      */
     private fun whyNoMirror(requestBody: KSClassDeclaration): NoMirror? {
         if (requestBody.hasOptOut()) return NoMirror("it has @NotNullForKIgnore", warn = false)
-        if (requestBody.origin == Origin.JAVA) return NoMirror("it is a Java class")
-        if (requestBody.origin != Origin.KOTLIN) return NoMirror("it is not compiled in this module", warn = false)
+        when (requestBody.origin) {
+            Origin.KOTLIN -> Unit
+            Origin.KOTLIN_LIB -> if (requestBody.isInKotlinPackage()) return NoMirror("it is a Kotlin standard library class", warn = false)
+            Origin.JAVA -> return NoMirror("it is a Java class")
+            // Library types such as `JsonNode` or `java.util.Map`.
+            else -> return NoMirror("it is a Java class from a library", warn = false)
+        }
         when (requestBody.classKind) {
             ClassKind.CLASS, ClassKind.INTERFACE -> Unit
             // Nothing in them to check.
@@ -141,7 +151,7 @@ class MirrorProcessor(
             requestBody.classKind == ClassKind.INTERFACE -> return NoMirror("it is an interface")
             Modifier.ABSTRACT in modifiers -> return NoMirror("it is abstract")
             requestBody.typeParameters.isNotEmpty() -> return NoMirror("it is generic")
-            Modifier.VALUE in modifiers || Modifier.INLINE in modifiers -> return NoMirror("it is a value class")
+            requestBody.isValueClass() -> return NoMirror("it is a value class")
             Modifier.INNER in modifiers -> return NoMirror("it is an inner class")
         }
         // The Mirror, in another file, must see the class and its primary constructor.
@@ -192,8 +202,14 @@ class MirrorProcessor(
         val parameters = requestBody.primaryConstructor!!.parameters
         val properties = requestBody.propertiesByName()
         val defaulted = parameters.filter { it.hasDefault }
-        val source = if (defaulted.isEmpty()) null else DefaultValues.read(requestBody)
-        if (defaulted.isNotEmpty() && source == null) {
+        // The default values of a class compiled in another module are applied through its constructor
+        // (see MirrorField.Defaulted); those of a class of this module are copied from its source file.
+        val compiledElsewhere = requestBody.isCompiledElsewhere()
+        val source = if (defaulted.isEmpty() || compiledElsewhere) null else DefaultValues.read(requestBody)
+        if (defaulted.isNotEmpty() && compiledElsewhere) {
+            whyDefaultsCantBeApplied(requestBody)?.let { return noMirror(requestBody, "the default values of its properties can't be applied: $it") }
+        }
+        if (defaulted.isNotEmpty() && !compiledElsewhere && source == null) {
             return noMirror(requestBody, "the default values of its properties can't be read from its source file")
         }
 
@@ -208,11 +224,21 @@ class MirrorProcessor(
             val annotations = jacksonAnnotations(parameter, properties[name])
             when {
                 parameter.hasDefault -> {
-                    val defaultValue = source!!.parameters[name]?.defaultValue
-                        ?: return noMirror(requestBody, "the default value of '$name' can't be read from its source file")
-                    val unresolvable = source.unresolvableNames(name, requiredNames)
-                    if (unresolvable.isNotEmpty()) {
-                        return noMirror(requestBody, "the default value of '$name' refers to ${unresolvable.joinToString { "'$it'" }}")
+                    val defaultValue = if (source == null) {
+                        // The Mirror reads the field with its own deserializer (see MirrorField.Defaulted).
+                        val ownAnnotations = parameter.annotations + properties[name]?.allAnnotations().orEmpty()
+                        if (ownAnnotations.any { JSON_DESERIALIZE in it.jacksonNames() }) {
+                            return noMirror(requestBody, "the default value of '$name' can't be applied: it has its own @JsonDeserialize")
+                        }
+                        null
+                    } else {
+                        val copied = source.parameters[name]?.defaultValue
+                            ?: return noMirror(requestBody, "the default value of '$name' can't be read from its source file")
+                        val unresolvable = source.unresolvableNames(name, requiredNames)
+                        if (unresolvable.isNotEmpty()) {
+                            return noMirror(requestBody, "the default value of '$name' refers to ${unresolvable.joinToString { "'$it'" }}")
+                        }
+                        copied
                     }
                     // A Defaulted Field keeps the Request Body's type, even if that type has a Mirror.
                     val unchecked = containerAndNestedTypeOf(parameter, annotations).second
@@ -235,6 +261,28 @@ class MirrorProcessor(
         }
         for ((message, parameter) in warnings) logger.warn(message, parameter)
         return MirrorPlan(requestBody.qualifiedName!!.asString(), fields, source?.imports.orEmpty(), requestBody.annotations.toSpecs())
+    }
+
+    /** Whether this class is in the `kotlin` package or a subpackage, where no Mirror may be declared. */
+    private fun KSClassDeclaration.isInKotlinPackage(): Boolean =
+        packageName.asString().let { it == "kotlin" || it.startsWith("kotlin.") }
+
+    /**
+     * Why the Mirror of [requestBody], compiled in another module, can't build it through the
+     * constructor that applies the default values of its primary constructor: the Mirror would pass
+     * a value class field boxed, or it couldn't tell that constructor from another one's.
+     */
+    private fun whyDefaultsCantBeApplied(requestBody: KSClassDeclaration): String? {
+        val primary = requestBody.primaryConstructor!!
+        primary.parameters.firstOrNull { parameter ->
+            val type = parameter.type.resolve().expanded()
+            val declaration = type.declaration.classDeclaration()
+            declaration != null && declaration.isValueClass()
+        }?.let { return "its property '${it.name?.asString()}' is of a value class" }
+        val sameShape = requestBody.getConstructors().any { other ->
+            other != primary && other.parameters.size == primary.parameters.size && other.parameters.any { it.hasDefault }
+        }
+        return if (sameShape) "another constructor has as many parameters and default values" else null
     }
 
     private fun KSClassDeclaration.hasOptOut(): Boolean = annotations.any { it.qualifiedName() == OPT_OUT }
@@ -280,17 +328,17 @@ class MirrorProcessor(
     }
 
     /**
-     * The class of [type] if it may be a Nested Type: a class or interface of this compilation. It is
-     * one if it gets a Mirror; if it is a shape the plugin can't handle, the build warns about it. Library
-     * types such as `String` or `List` are not, nor are enum classes, objects and value classes (Jackson
-     * reads a value class as its single value): those are left as they are, without a warning.
+     * The class of [type] if it may be a Nested Type: a Kotlin class or interface of this module, another
+     * module or a library. It is one if it gets a Mirror; if it is a shape the plugin can't handle, the
+     * build warns about it. Java types and Kotlin standard library types such as `String` or `List` are
+     * not, nor are enum classes, objects and value classes (Jackson reads a value class as its single
+     * value): those are left as they are, without a warning.
      */
     private fun possiblyNestedTypeOf(type: KSType): KSClassDeclaration? {
         val declaration = type.declaration.classDeclaration() ?: return null
         return declaration.takeIf {
-            it.origin == Origin.KOTLIN &&
-                (it.classKind == ClassKind.CLASS || it.classKind == ClassKind.INTERFACE) &&
-                Modifier.VALUE !in it.modifiers && Modifier.INLINE !in it.modifiers
+            (it.origin == Origin.KOTLIN || it.origin == Origin.KOTLIN_LIB && !it.isInKotlinPackage()) &&
+                (it.classKind == ClassKind.CLASS || it.classKind == ClassKind.INTERFACE) && !it.isValueClass()
         }
     }
 
@@ -446,9 +494,18 @@ private class DefaultValues(
 
 private fun KSDeclaration.isPrivate() = Modifier.PRIVATE in modifiers
 
-/** "private" or "protected" if code in another file of the package can't use this declaration. */
+/** Whether this declaration is compiled in another module or a library, so this module sees only its class files. */
+private fun KSDeclaration.isCompiledElsewhere() = origin != Origin.KOTLIN
+
+private fun KSClassDeclaration.isValueClass() = Modifier.VALUE in modifiers || Modifier.INLINE in modifiers
+
+/**
+ * "private" or "protected" if code in another file of the package can't use this declaration, or
+ * "internal" if it is compiled in another module.
+ */
 private fun KSDeclaration.hiddenAs(): String? = when {
     isPrivate() -> "private"
     Modifier.PROTECTED in modifiers -> "protected"
+    isCompiledElsewhere() && getVisibility() == Visibility.INTERNAL -> "internal"
     else -> null
 }

@@ -16,6 +16,9 @@ kotlin {
 }
 
 dependencies {
+    implementation(project(":shared-requests"))
+    // Published to build/library-repo by `:published-library:publish` before the app is built.
+    implementation("com.example.published:invoice-requests:1.0")
     implementation("org.springframework.boot:spring-boot-starter-web")
     implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
     implementation("org.jetbrains.kotlin:kotlin-reflect")

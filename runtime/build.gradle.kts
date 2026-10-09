@@ -29,6 +29,9 @@ testing {
             useJUnitJupiter(libs.versions.junit)
             dependencies {
                 implementation(libs.assertj)
+                implementation(platform(libs.spring.boot.dependencies))
+                implementation(libs.jackson.databind)
+                implementation("com.fasterxml.jackson.module:jackson-module-kotlin")
             }
         }
     }

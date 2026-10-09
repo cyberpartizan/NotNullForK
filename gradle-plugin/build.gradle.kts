@@ -38,7 +38,7 @@ testing {
                             .map { "$it:publishAllPublicationsToTestRepoRepository" },
                     )
                     val testApp = rootProject.layout.projectDirectory.dir("test-app")
-                    inputs.files(fileTree(testApp) { exclude("build/**", ".gradle/**", ".kotlin/**") })
+                    inputs.files(fileTree(testApp) { exclude("**/build/**", "**/.gradle/**", "**/.kotlin/**") })
                         .withPropertyName("testApp")
                     systemProperty("testApp", testApp.asFile.absolutePath)
                     systemProperty("testRepo", rootProject.layout.buildDirectory.dir("test-repo").get().asFile.absolutePath)

@@ -3,6 +3,9 @@ dependencies {
     implementation(libs.kotlinpoet.ksp)
 }
 
+// Compiled sample Request Bodies, which the processor tests see as classes of another module.
+val sampleLibrary by sourceSets.creating
+
 // The classpath of the sample Request Bodies the processor tests run KSP on.
 val sampleLibraries by configurations.creating {
     isCanBeConsumed = false
@@ -10,6 +13,10 @@ val sampleLibraries by configurations.creating {
 }
 
 dependencies {
+    "sampleLibraryImplementation"(project(":not-null-for-k-runtime"))
+    "sampleLibraryImplementation"(platform(libs.spring.boot.dependencies))
+    "sampleLibraryImplementation"(libs.jackson.databind)
+    sampleLibraries(sampleLibrary.output)
     sampleLibraries(project(":not-null-for-k-runtime"))
     sampleLibraries(platform(libs.spring.boot.dependencies))
     sampleLibraries(libs.spring.webmvc)

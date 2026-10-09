@@ -17,7 +17,7 @@ A Request Body property whose type is non-null and that has no default value.
 _Avoid_: mandatory field, not-null field
 
 **Defaulted Field**:
-A Request Body property that has a default value. The plugin leaves it untouched.
+A Request Body property that has a default value. The plugin doesn't check it: when the JSON leaves it out, it gets the Request Body's default value.
 _Avoid_: optional field
 
 **Nested Type**:

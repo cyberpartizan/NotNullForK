@@ -28,8 +28,15 @@ dependencyResolutionManagement {
     val testRepo: String by settings
     repositories {
         maven { url = uri(testRepo) }
+        // Where `published-library` is published to, before the app is built against its jar.
+        maven { url = uri(settingsDir.resolve("build/library-repo")) }
         mavenCentral()
     }
 }
 
 rootProject.name = "test-app"
+
+// Request Bodies in a sibling module that doesn't apply the plugin, used by the app as a project dependency.
+include("shared-requests")
+// Request Bodies in a library that the app uses as a published jar, not as a project dependency.
+include("published-library")

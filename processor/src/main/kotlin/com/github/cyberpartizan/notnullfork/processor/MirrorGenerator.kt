@@ -18,6 +18,10 @@ private val NOT_NULL = ClassName("jakarta.validation.constraints", "NotNull")
 private val VALID = ClassName("jakarta.validation", "Valid")
 private val JSON_DESERIALIZE = ClassName("com.fasterxml.jackson.databind.annotation", "JsonDeserialize")
 private val NESTED_MIRROR_DESERIALIZER = ClassName("com.github.cyberpartizan.notnullfork", "NestedMirrorDeserializer")
+private val PRESENT = ClassName("com.github.cyberpartizan.notnullfork", "Present")
+private val PRESENT_DESERIALIZER = ClassName("com.github.cyberpartizan.notnullfork", "PresentDeserializer")
+private val NON_NULL_PRESENT_DESERIALIZER = PRESENT_DESERIALIZER.nestedClass("NonNull")
+private val DEFAULTS_CONSTRUCTOR = ClassName("com.github.cyberpartizan.notnullfork", "DefaultsConstructor")
 private val ELEMENTS_NOT_NULL = ClassName("com.github.cyberpartizan.notnullfork.elements", "NotNull")
 private val LIST = ClassName("kotlin.collections", "List")
 private val MAP = ClassName("kotlin.collections", "Map")
@@ -69,13 +73,19 @@ internal sealed class MirrorField(
         container: Container? = null,
     ) : MirrorField(name, type, mutable, annotations, nested, container)
 
-    /** Has a default value: copied as it is, with the default value expression as written in the source. */
+    /**
+     * Has a default value: copied as it is, with the [defaultValue] expression as written in the source.
+     *
+     * Without a [defaultValue] (the Request Body is compiled in another module, so its source can't be
+     * read), it is a `Present<T>?` in the Mirror: `null` if the JSON doesn't have it, so that the
+     * Request Body's own default value applies, or the value (`null` too) that the JSON has.
+     */
     class Defaulted(
         name: String,
         type: TypeName,
         mutable: Boolean,
         annotations: List<AnnotationSpec>,
-        val defaultValue: String,
+        val defaultValue: String?,
     ) : MirrorField(name, type, mutable, annotations, nested = null, container = null)
 
     /**
@@ -150,10 +160,19 @@ internal object MirrorGenerator {
                     parameter.defaultValue("null")
                     property.addAnnotation(AnnotationSpec.builder(NOT_NULL).useSiteTarget(AnnotationSpec.UseSiteTarget.FIELD).build())
                 }
-                is MirrorField.Defaulted -> {
+                is MirrorField.Defaulted -> if (field.defaultValue != null) {
                     val placeholder = "__notNullForKDefault${placeholders.size}__"
                     placeholders[placeholder] = field.defaultValue
                     parameter.defaultValue("%L", placeholder)
+                } else {
+                    parameter.defaultValue("null")
+                    val deserializer = if (field.type.isNullable) PRESENT_DESERIALIZER else NON_NULL_PRESENT_DESERIALIZER
+                    parameter.addAnnotation(
+                        AnnotationSpec.builder(JSON_DESERIALIZE)
+                            .useSiteTarget(AnnotationSpec.UseSiteTarget.PARAM)
+                            .addMember("using = %T::class", deserializer)
+                            .build(),
+                    )
                 }
                 is MirrorField.Nullable -> Unit
             }
@@ -173,17 +192,23 @@ internal object MirrorGenerator {
             mirror.addProperty(property.build())
         }
         mirror.primaryConstructor(constructor.build())
-        mirror.addFunction(
-            FunSpec.builder("toRequestBody")
-                .addModifiers(KModifier.OVERRIDE)
-                .returns(requestBody)
-                .addStatement(
-                    "return %T(%L)",
-                    requestBody,
-                    fields.map { it.toRequestBodyArgument() }.joinToCode(", "),
-                )
-                .build(),
-        )
+        val toRequestBody = FunSpec.builder("toRequestBody").addModifiers(KModifier.OVERRIDE).returns(requestBody)
+        // The indexes (in the primary constructor, whose parameters [fields] are in order) of the
+        // Defaulted Fields whose default values the Request Body's constructor applies.
+        val defaultedIndexes = fields.indices.filter { (fields[it] as? MirrorField.Defaulted)?.let { field -> field.defaultValue == null } == true }
+        if (defaultedIndexes.isEmpty()) {
+            val arguments = fields.map { CodeBlock.of("%N = %L", it.name, it.toRequestBodyValue()) }
+            toRequestBody.addStatement("return %T(%L)", requestBody, arguments.joinToCode(", "))
+        } else {
+            // Kotlin code can't call the constructor that applies the Request Body's default values.
+            val defaults = PropertySpec.builder("DEFAULTS", DEFAULTS_CONSTRUCTOR.parameterizedBy(requestBody))
+                .initializer("%T(%T::class.java, %L, intArrayOf(%L))", DEFAULTS_CONSTRUCTOR, requestBody, fields.size, defaultedIndexes.joinToString(", "))
+                .build()
+            mirror.addType(TypeSpec.companionObjectBuilder().addModifiers(KModifier.PRIVATE).addProperty(defaults).build())
+            // Qualified, so that a field named DEFAULTS doesn't hide it.
+            toRequestBody.addStatement("return %T.DEFAULTS.newInstance(%L)", mirrorName, fields.map { it.toRequestBodyValue() }.joinToCode(", "))
+        }
+        mirror.addFunction(toRequestBody.build())
 
         val file = FileSpec.builder(mirrorName).addType(mirror.build()).build()
         var text = withImports(file, imports)
@@ -205,12 +230,16 @@ internal object MirrorGenerator {
             }
             nested != null -> MIRROR.parameterizedBy(nested).copy(nullable = true)
             this is MirrorField.Required -> type.copy(nullable = true)
+            this is MirrorField.Defaulted && defaultValue == null -> PRESENT.parameterizedBy(type).copy(nullable = true)
             else -> type
         }
     }
 
-    /** `name = <the Request Body's value of this field>`; Required Fields have been checked by now. */
-    private fun MirrorField.toRequestBodyArgument(): CodeBlock {
+    /**
+     * The Request Body's value of this field; Required Fields have been checked by now. A Defaulted Field
+     * without a default value is passed as it is, to [DEFAULTS_CONSTRUCTOR].
+     */
+    private fun MirrorField.toRequestBodyValue(): CodeBlock {
         val required = this is MirrorField.Required
         val container = container
         if (container != null) {
@@ -227,13 +256,13 @@ internal object MirrorGenerator {
                 Container.Kind.SET -> "mapTo" to LINKED_HASH_SET.parameterizedBy(container.element)
                 Container.Kind.MAP -> "mapValuesTo" to LINKED_HASH_MAP.parameterizedBy(container.key!!, container.element)
             }
-            return CodeBlock.of("%N = $receiver.$function(%T())·{ $element }", name, name, target)
+            return CodeBlock.of("$receiver.$function(%T())·{ $element }", name, target)
         }
         return when {
-            nested != null && required -> CodeBlock.of("%N = %N!!.toRequestBody()", name, name)
-            nested != null -> CodeBlock.of("%N = %N?.toRequestBody()", name, name)
-            required -> CodeBlock.of("%N = %N!!", name, name)
-            else -> CodeBlock.of("%N = %N", name, name)
+            nested != null && required -> CodeBlock.of("%N!!.toRequestBody()", name)
+            nested != null -> CodeBlock.of("%N?.toRequestBody()", name)
+            required -> CodeBlock.of("%N!!", name)
+            else -> CodeBlock.of("%N", name)
         }
     }
 
