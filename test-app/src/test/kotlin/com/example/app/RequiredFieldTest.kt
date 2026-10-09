@@ -12,6 +12,7 @@ import org.springframework.test.web.servlet.MockMvc
 import org.springframework.test.web.servlet.MvcResult
 import org.springframework.test.web.servlet.post
 import org.springframework.web.bind.MethodArgumentNotValidException
+import java.nio.charset.StandardCharsets
 
 @SpringBootTest
 @AutoConfigureMockMvc
@@ -66,6 +67,26 @@ class RequiredFieldTest(@Autowired private val mockMvc: MockMvc) {
 
         assertThat(result.response.status).isEqualTo(200)
         assertThat(result.response.contentAsString).isEqualTo("""{"name":"Ann","age":42}""")
+    }
+
+    @Test
+    fun `a JSON body in a non-Unicode charset is read in that charset`() {
+        val result = mockMvc.post("/users") {
+            contentType = MediaType(MediaType.APPLICATION_JSON, StandardCharsets.ISO_8859_1)
+            content = """{"name": "José", "age": 42}""".toByteArray(StandardCharsets.ISO_8859_1)
+        }.andReturn()
+
+        assertThat(result.response.status).isEqualTo(200)
+        assertThat(result.response.getContentAsString(StandardCharsets.UTF_8)).isEqualTo("""{"name":"José","age":42}""")
+    }
+
+    @Test
+    fun `an exception of the Request Body's constructor returns a 400 as without the plugin`() {
+        val result = post("/users/adult", """{"age": 12}""")
+
+        assertThat(result.response.status).isEqualTo(400)
+        assertThat(result.resolvedException).isInstanceOf(HttpMessageNotReadableException::class.java)
+            .hasMessageContaining("must be an adult")
     }
 
     @Test

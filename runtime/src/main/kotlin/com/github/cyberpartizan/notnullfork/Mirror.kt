@@ -1,7 +1,5 @@
 package com.github.cyberpartizan.notnullfork
 
-import java.util.concurrent.ConcurrentHashMap
-
 /**
  * A generated copy of a Request Body in which every Required Field is nullable and must not be null.
  * Incoming JSON is read into the Mirror, checked, and then mapped to the Request Body.
@@ -14,15 +12,15 @@ interface Mirror<out T : Any> {
 }
 
 internal object Mirrors {
-    private val cache = ConcurrentHashMap<Class<*>, Any>()
-    private val none = Any()
+    // Kept on each class rather than in a map, so that a discarded class loader (e.g. on a Spring Boot
+    // DevTools restart) is not held here.
+    private val cache = object : ClassValue<Class<out Mirror<*>>?>() {
+        @Suppress("UNCHECKED_CAST")
+        override fun computeValue(type: Class<*>): Class<out Mirror<*>>? = lookUp(type) as Class<out Mirror<*>>?
+    }
 
     /** The Mirror class generated for [requestBodyClass], or `null` if it has none. */
-    fun mirrorClassFor(requestBodyClass: Class<*>): Class<out Mirror<*>>? {
-        val found = cache.computeIfAbsent(requestBodyClass) { lookUp(it) ?: none }
-        @Suppress("UNCHECKED_CAST")
-        return if (found === none) null else found as Class<out Mirror<*>>
-    }
+    fun mirrorClassFor(requestBodyClass: Class<*>): Class<out Mirror<*>>? = cache.get(requestBodyClass)
 
     private fun lookUp(requestBodyClass: Class<*>): Class<*>? {
         val packageName = requestBodyClass.packageName

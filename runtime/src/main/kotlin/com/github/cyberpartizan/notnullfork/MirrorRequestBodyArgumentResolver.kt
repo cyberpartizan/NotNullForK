@@ -22,6 +22,7 @@ import org.springframework.web.context.request.NativeWebRequest
 import org.springframework.web.method.support.HandlerMethodArgumentResolver
 import org.springframework.web.method.support.ModelAndViewContainer
 import java.io.IOException
+import java.io.InputStreamReader
 import java.io.PushbackInputStream
 
 /**
@@ -55,7 +56,7 @@ internal class MirrorRequestBodyArgumentResolver(
 
         val requestBody = mirror?.let {
             checkRequiredFields(it, name, parameter)
-            it.toRequestBody()
+            toRequestBody(it, parameter, inputMessage)
         }
         bindAndValidate(requestBody, name, parameter, mavContainer, webRequest, binderFactory)
         return requestBody
@@ -76,7 +77,13 @@ internal class MirrorRequestBodyArgumentResolver(
                         null
                     } else {
                         body.unread(first)
-                        converter.objectMapper.readValue(body, mirrorClass)
+                        // As in Spring: Jackson detects the Unicode encodings itself, others need a reader.
+                        val charset = contentType?.charset
+                        if (charset == null || charset.name().startsWith("UTF-")) {
+                            converter.objectMapper.readValue(body, mirrorClass)
+                        } else {
+                            converter.objectMapper.readValue(InputStreamReader(body, charset), mirrorClass)
+                        }
                     }
                 contentType == null && first == -1 -> null
                 else -> throw HttpMediaTypeNotSupportedException(
@@ -100,6 +107,19 @@ internal class MirrorRequestBodyArgumentResolver(
             )
         }
     }
+
+    // Jackson reports an exception of the Request Body's constructor (e.g. a `require` in an `init` block)
+    // as a value instantiation problem, which Spring answers with a 400; so does the Mirror.
+    private fun toRequestBody(mirror: Mirror<*>, parameter: MethodParameter, inputMessage: HttpInputMessage): Any =
+        try {
+            mirror.toRequestBody()
+        } catch (e: Exception) {
+            throw HttpMessageNotReadableException(
+                "JSON parse error: Cannot construct instance of `${parameter.nestedParameterType.name}`, problem: ${e.message}",
+                e,
+                inputMessage,
+            )
+        }
 
     private fun checkRequiredFields(mirror: Mirror<*>, name: String, parameter: MethodParameter) {
         val result = BeanPropertyBindingResult(mirror, name)
