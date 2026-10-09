@@ -80,6 +80,23 @@ class MirrorTest {
         )
     }
 
+    @Test
+    fun `only Jackson annotations are copied to the Mirror`() {
+        val mirror = mirrorOf("UpdateProfileRequest").java
+        val annotations = mirror.annotations.toList() +
+            mirror.declaredFields.flatMap { it.annotations.toList() } +
+            mirror.declaredMethods.flatMap { it.annotations.toList() } +
+            mirror.declaredConstructors.flatMap { constructor -> constructor.parameters.flatMap { it.annotations.toList() } }
+
+        assertThat(annotations.map { it.annotationClass.java.packageName }.distinct()).containsExactlyInAnyOrder(
+            "kotlin", // @Metadata
+            "com.fasterxml.jackson.annotation",
+            "com.example.app", // @Internal, which bundles Jackson annotations
+            "jakarta.validation.constraints",
+        )
+        assertThat(annotations.map { it.annotationClass }).doesNotContain(Audited::class).contains(Internal::class)
+    }
+
     private fun mirrorOf(requestBody: String): KClass<*> = Class.forName("com.example.app.generated.${requestBody}Mirror").kotlin
 
     /** `(where, constraint annotation name)` for every Bean Validation constraint on [type]. */

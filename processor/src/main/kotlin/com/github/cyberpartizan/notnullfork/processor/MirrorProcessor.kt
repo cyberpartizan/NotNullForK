@@ -10,16 +10,23 @@ import com.google.devtools.ksp.processing.SymbolProcessorProvider
 import com.google.devtools.ksp.symbol.ClassKind
 import com.google.devtools.ksp.symbol.FileLocation
 import com.google.devtools.ksp.symbol.KSAnnotated
+import com.google.devtools.ksp.symbol.KSAnnotation
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.symbol.KSDeclaration
+import com.google.devtools.ksp.symbol.KSPropertyDeclaration
 import com.google.devtools.ksp.symbol.KSValueParameter
 import com.google.devtools.ksp.symbol.Modifier
 import com.google.devtools.ksp.symbol.Origin
+import com.squareup.kotlinpoet.AnnotationSpec
+import com.squareup.kotlinpoet.ksp.toAnnotationSpec
 import com.squareup.kotlinpoet.ksp.toClassName
 import com.squareup.kotlinpoet.ksp.toTypeName
 import java.io.File
 
 private const val REQUEST_BODY = "org.springframework.web.bind.annotation.RequestBody"
+private const val JACKSON_PACKAGE_PREFIX = "com.fasterxml.jackson."
+private const val JACKSON_ANNOTATIONS_INSIDE = "com.fasterxml.jackson.annotation.JacksonAnnotationsInside"
+private const val JSON_DESERIALIZE = "com.fasterxml.jackson.databind.annotation.JsonDeserialize"
 
 class MirrorProcessorProvider : SymbolProcessorProvider {
     override fun create(environment: SymbolProcessorEnvironment): SymbolProcessor =
@@ -61,7 +68,13 @@ class MirrorProcessor(
     }
 
     private fun generate(requestBody: KSClassDeclaration) {
+        if (requestBody.annotations.any { it.qualifiedName() == JSON_DESERIALIZE }) {
+            // The Request Body's own deserializer builds the Request Body, not the Mirror.
+            return noMirror(requestBody, "it has a class-level @JsonDeserialize")
+        }
         val parameters = requestBody.primaryConstructor!!.parameters
+        val properties = requestBody.declarations.filterIsInstance<KSPropertyDeclaration>()
+            .associateBy { it.simpleName.asString() }
         val defaulted = parameters.filter { it.hasDefault }
         val source = if (defaulted.isEmpty()) null else DefaultValues.read(requestBody)
         if (defaulted.isNotEmpty() && source == null) {
@@ -73,6 +86,8 @@ class MirrorProcessor(
         val fields = parameters.map { parameter ->
             val name = parameter.name!!.asString()
             val type = parameter.type.toTypeName()
+            val mutable = parameter.isVar
+            val annotations = jacksonAnnotations(parameter, properties[name])
             when {
                 parameter.hasDefault -> {
                     val defaultValue = source!!.parameters[name]?.defaultValue
@@ -81,17 +96,49 @@ class MirrorProcessor(
                     if (unresolvable.isNotEmpty()) {
                         return noMirror(requestBody, "the default value of '$name' refers to ${unresolvable.joinToString { "'$it'" }}")
                     }
-                    MirrorField.Defaulted(name, type, defaultValue)
+                    MirrorField.Defaulted(name, type, mutable, annotations, defaultValue)
                 }
-                type.isNullable -> MirrorField.Nullable(name, type)
-                else -> MirrorField.Required(name, type)
+                type.isNullable -> MirrorField.Nullable(name, type, mutable, annotations)
+                else -> MirrorField.Required(name, type, mutable, annotations)
             }
         }
 
-        val file = MirrorGenerator.generate(requestBody.toClassName(), fields, source?.imports.orEmpty())
+        val file = MirrorGenerator.generate(
+            requestBody.toClassName(),
+            fields,
+            source?.imports.orEmpty(),
+            requestBody.annotations.toSpecs(),
+        )
         val dependencies = Dependencies(aggregating = false, *listOfNotNull(requestBody.containingFile).toTypedArray())
         codeGenerator.createNewFile(dependencies, file.packageName, file.fileName).bufferedWriter().use { it.write(file.text) }
     }
+
+    /**
+     * The Jackson annotations of a primary constructor property, wherever they are written: on the
+     * parameter, the property, its field, getter or setter. Each keeps its use-site target.
+     */
+    private fun jacksonAnnotations(parameter: KSValueParameter, property: KSPropertyDeclaration?): List<AnnotationSpec> {
+        val onDeclaration = (parameter.annotations + property?.annotations.orEmpty()).toSpecs()
+        // KSP may report accessor annotations without their use-site target.
+        val onGetter = property?.getter?.annotations.orEmpty().toSpecs(AnnotationSpec.UseSiteTarget.GET)
+        val onSetter = property?.setter?.annotations.orEmpty().toSpecs(AnnotationSpec.UseSiteTarget.SET)
+        return (onDeclaration + onGetter + onSetter).distinct()
+    }
+
+    /** The Jackson annotations among these, with [target] as the use-site target of those that have none. */
+    private fun Sequence<KSAnnotation>.toSpecs(target: AnnotationSpec.UseSiteTarget? = null): List<AnnotationSpec> =
+        filter { it.isJackson() }.map { annotation ->
+            val spec = annotation.toAnnotationSpec(omitDefaultValues = true)
+            if (spec.useSiteTarget == null && target != null) spec.toBuilder().useSiteTarget(target).build() else spec
+        }.toList()
+
+    private fun KSAnnotation.qualifiedName(): String? =
+        annotationType.resolve().declaration.qualifiedName?.asString()
+
+    /** A Jackson annotation, or an annotation that bundles Jackson annotations with `@JacksonAnnotationsInside`. */
+    private fun KSAnnotation.isJackson(): Boolean =
+        qualifiedName()?.startsWith(JACKSON_PACKAGE_PREFIX) == true ||
+            annotationType.resolve().declaration.annotations.any { it.qualifiedName() == JACKSON_ANNOTATIONS_INSIDE }
 
     private fun noMirror(requestBody: KSClassDeclaration, reason: String) {
         logger.warn("NotNullForK: no Mirror generated for ${requestBody.qualifiedName!!.asString()}: $reason", requestBody)
