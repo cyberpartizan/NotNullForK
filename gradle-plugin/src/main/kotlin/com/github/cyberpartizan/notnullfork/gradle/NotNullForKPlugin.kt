@@ -6,7 +6,8 @@ import java.util.Properties
 
 /**
  * Applies KSP to a Kotlin JVM project and adds the NotNullForK processor and runtime,
- * so the consumer needs no other build configuration.
+ * so the consumer needs no other build configuration. A KSP version the consumer applies itself is used
+ * instead of the plugin's own (see ADR 0003).
  */
 class NotNullForKPlugin : Plugin<Project> {
 

@@ -3,7 +3,11 @@ plugins {
 }
 
 dependencies {
-    implementation(libs.ksp.gradle.plugin)
+    // Only preferred: a KSP version the consumer puts on the build script classpath wins, older or newer.
+    // The plugin applies KSP by id, so it needs no KSP classes to compile.
+    runtimeOnly(libs.ksp.gradle.plugin.get().module.toString()) {
+        version { prefer(libs.versions.ksp.get()) }
+    }
 }
 
 gradlePlugin {
@@ -41,6 +45,11 @@ testing {
                     inputs.files(fileTree(testApp) { exclude("**/build/**", "**/.gradle/**", "**/.kotlin/**") })
                         .withPropertyName("testApp")
                     systemProperty("testApp", testApp.asFile.absolutePath)
+                    val testKspConsumer = rootProject.layout.projectDirectory.dir("test-ksp-consumer")
+                    inputs.files(fileTree(testKspConsumer) { exclude("**/build/**", "**/.gradle/**", "**/.kotlin/**") })
+                        .withPropertyName("testKspConsumer")
+                    systemProperty("testKspConsumer", testKspConsumer.asFile.absolutePath)
+                    systemProperty("testedKspVersion", libs.versions.ksp.get())
                     systemProperty("testRepo", rootProject.layout.buildDirectory.dir("test-repo").get().asFile.absolutePath)
                     systemProperty("notNullForKVersion", project.version.toString())
                     testLogging {
