@@ -1,0 +1,24 @@
+dependencies {
+    // Provided by the consumer's Spring Boot app.
+    compileOnly(platform(libs.spring.boot.dependencies))
+    compileOnly(libs.spring.boot.autoconfigure)
+    compileOnly(libs.spring.webmvc)
+    compileOnly(libs.jackson.databind)
+    compileOnly(libs.jakarta.servlet.api)
+
+    // Mirrors carry Jakarta constraints, and the Required Field check needs a Bean Validation provider.
+    api(libs.jakarta.validation.api)
+    implementation(libs.spring.boot.starter.validation)
+}
+
+java {
+    withSourcesJar()
+}
+
+publishing {
+    publications {
+        create<MavenPublication>("maven") {
+            from(components["java"])
+        }
+    }
+}
