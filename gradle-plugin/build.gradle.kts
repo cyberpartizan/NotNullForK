@@ -20,7 +20,7 @@ gradlePlugin {
     vcsUrl = "https://github.com/cyberpartizan/not-null-for-k.git"
     plugins {
         create("notNullForK") {
-            id = "com.github.cyberpartizan.not-null-for-k"
+            id = "io.github.cyberpartizan.not-null-for-k"
             displayName = "NotNullForK"
             description = project.description
             tags = listOf("kotlin", "spring", "spring-boot", "validation", "jackson", "ksp")

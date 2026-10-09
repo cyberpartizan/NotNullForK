@@ -14,5 +14,5 @@ dependencies {
     compileOnly(platform("org.springframework.boot:spring-boot-dependencies:$springBootVersion"))
     compileOnly("com.fasterxml.jackson.core:jackson-annotations")
     // For the Opt-out annotation; the app gets the runtime from the plugin.
-    compileOnly("com.github.cyberpartizan:not-null-for-k-runtime:$notNullForKVersion")
+    compileOnly("io.github.cyberpartizan:not-null-for-k-runtime:$notNullForKVersion")
 }

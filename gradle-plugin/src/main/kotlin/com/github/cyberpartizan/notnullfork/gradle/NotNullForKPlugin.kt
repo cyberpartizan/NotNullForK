@@ -48,7 +48,7 @@ class NotNullForKPlugin : Plugin<Project> {
     }
 
     private companion object {
-        const val GROUP = "com.github.cyberpartizan"
+        const val GROUP = "io.github.cyberpartizan"
 
         val version: String by lazy {
             val properties = Properties()

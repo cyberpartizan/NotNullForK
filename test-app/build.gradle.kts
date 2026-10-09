@@ -3,7 +3,7 @@ plugins {
     kotlin("plugin.spring")
     id("org.springframework.boot")
     id("io.spring.dependency-management")
-    id("com.github.cyberpartizan.not-null-for-k")
+    id("io.github.cyberpartizan.not-null-for-k")
 }
 
 // Spring Boot 3.0 manages an older Kotlin; keep the stdlib in line with the Kotlin plugin.

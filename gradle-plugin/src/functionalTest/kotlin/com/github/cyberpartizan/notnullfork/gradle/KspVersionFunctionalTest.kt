@@ -123,6 +123,6 @@ class KspVersionFunctionalTest {
 
     private companion object {
         const val KOTLIN = """kotlin("jvm")"""
-        const val NOT_NULL_FOR_K = """id("com.github.cyberpartizan.not-null-for-k")"""
+        const val NOT_NULL_FOR_K = """id("io.github.cyberpartizan.not-null-for-k")"""
     }
 }

@@ -61,8 +61,8 @@ class PublishingFunctionalTest {
         assertThat(artifact("not-null-for-k-gradle-plugin", ".module").readText()).contains("\"prefers\"")
         val marker = File(
             mavenLocal,
-            "com/github/cyberpartizan/not-null-for-k/com.github.cyberpartizan.not-null-for-k.gradle.plugin/$version/" +
-                "com.github.cyberpartizan.not-null-for-k.gradle.plugin-$version.pom",
+            "io/github/cyberpartizan/not-null-for-k/io.github.cyberpartizan.not-null-for-k.gradle.plugin/$version/" +
+                "io.github.cyberpartizan.not-null-for-k.gradle.plugin-$version.pom",
         )
         assertThat(marker.readText()).contains("<name>NotNullForK</name>", "<artifactId>not-null-for-k-gradle-plugin</artifactId>")
         // Without signing keys nothing is signed.
@@ -90,7 +90,7 @@ class PublishingFunctionalTest {
     }
 
     private fun artifact(artifactId: String, suffix: String) =
-        File(mavenLocal, "com/github/cyberpartizan/$artifactId/$version/$artifactId-$version$suffix")
+        File(mavenLocal, "io/github/cyberpartizan/$artifactId/$version/$artifactId-$version$suffix")
 
     private fun testApp(arguments: List<String>) =
         GradleRunner.create()

@@ -9,12 +9,12 @@ See [GLOSSARY.md](GLOSSARY.md) for the terms and [docs/adr](docs/adr) for the de
 ```kotlin
 plugins {
     kotlin("jvm") version "..."
-    id("com.github.cyberpartizan.not-null-for-k") version "..."
+    id("io.github.cyberpartizan.not-null-for-k") version "..."
 }
 ```
 
-The plugin applies KSP and adds the processor (`com.github.cyberpartizan:not-null-for-k-processor`) and the runtime
-(`com.github.cyberpartizan:not-null-for-k-runtime`) in its own version. No other build configuration is needed.
+The plugin applies KSP and adds the processor (`io.github.cyberpartizan:not-null-for-k-processor`) and the runtime
+(`io.github.cyberpartizan:not-null-for-k-runtime`) in its own version. No other build configuration is needed.
 A KSP version the project applies itself is kept (ADR 0003).
 
 Kotlin 1.8.22 and newer are supported. On Kotlin 1.8, apply the KSP of your Kotlin version yourself (ADR 0004):
@@ -23,7 +23,7 @@ Kotlin 1.8.22 and newer are supported. On Kotlin 1.8, apply the KSP of your Kotl
 plugins {
     kotlin("jvm") version "1.8.22"
     id("com.google.devtools.ksp") version "1.8.22-1.0.11"
-    id("com.github.cyberpartizan.not-null-for-k") version "..."
+    id("io.github.cyberpartizan.not-null-for-k") version "..."
 }
 ```
 
@@ -31,9 +31,9 @@ plugins {
 
 | Module          | Artifact                                                  | Published to         |
 |-----------------|-----------------------------------------------------------|----------------------|
-| `gradle-plugin` | plugin id `com.github.cyberpartizan.not-null-for-k`       | Gradle Plugin Portal |
-| `processor`     | `com.github.cyberpartizan:not-null-for-k-processor`       | Maven Central        |
-| `runtime`       | `com.github.cyberpartizan:not-null-for-k-runtime`         | Maven Central        |
+| `gradle-plugin` | plugin id `io.github.cyberpartizan.not-null-for-k`       | Gradle Plugin Portal |
+| `processor`     | `io.github.cyberpartizan:not-null-for-k-processor`       | Maven Central        |
+| `runtime`       | `io.github.cyberpartizan:not-null-for-k-runtime`         | Maven Central        |
 
 All artifacts take the one `version` in `gradle.properties`. Every artifact is published with sources and
 javadoc jars, POM metadata (license, developers, SCM) and Gradle Module Metadata (`.module`).
@@ -57,10 +57,10 @@ test app against only that repository.
 
 ## Values to confirm before the first release
 
-These were filled in from the group `com.github.cyberpartizan` and are not confirmed yet
+These were filled in from the GitHub user `cyberpartizan` and are not confirmed yet
 (see the root `build.gradle.kts` and `gradle-plugin/build.gradle.kts`):
 
-- License: Apache License 2.0. Add a matching `LICENSE` file to the repository.
+- License: Apache License 2.0 (the `LICENSE` file).
 - Developer: id and name `cyberpartizan`, URL `https://github.com/cyberpartizan`, no email.
 - Project, website, VCS and SCM URLs: `https://github.com/cyberpartizan/not-null-for-k`.
 - Plugin Portal display name `NotNullForK` and tags `kotlin, spring, spring-boot, validation, jackson, ksp`.
@@ -74,18 +74,17 @@ Nothing has been published yet. These steps need the maintainer's accounts and k
    (e.g. `keys.openpgp.org`), and provide the ASCII-armored private key and its password as the `signingKey`
    and `signingPassword` properties (as environment variables or in `~/.gradle/gradle.properties`, never in the repository).
 2. **Central namespace verification.** Sign in to the [Central Portal](https://central.sonatype.com) and verify
-   the namespace `com.github.cyberpartizan`. The Central Portal may no longer accept new `com.github.*` namespaces
-   and suggest `io.github.cyberpartizan` instead; if so, change `group` in `gradle.properties` and `GROUP` in
-   `NotNullForKPlugin`. Generate a user token and provide it as the `mavenCentralUsername` and
-   `mavenCentralPassword` properties.
+   the namespace `io.github.cyberpartizan` (signing in with the GitHub account `cyberpartizan` verifies it).
+   The group is `io.github`, not `com.github`, because the Central Portal no longer verifies new `com.github.*`
+   namespaces. Generate a user token and provide it as the `mavenCentralUsername` and `mavenCentralPassword` properties.
 3. **Plugin Portal account verification.** Create an account on the [Gradle Plugin Portal](https://plugins.gradle.org),
-   linked to the GitHub user `cyberpartizan` so that it may publish `com.github.cyberpartizan.*` ids, and provide
+   linked to the GitHub user `cyberpartizan` so that it may publish `io.github.cyberpartizan.*` ids, and provide
    its API key as the `gradle.publish.key` and `gradle.publish.secret` properties.
 4. Set a release `version` (without `-SNAPSHOT`) in `gradle.properties`.
 5. Publish the processor and runtime first, since the plugin needs them:
    `./gradlew :not-null-for-k-runtime:publishAllPublicationsToMavenCentralRepository :not-null-for-k-processor:publishAllPublicationsToMavenCentralRepository`.
    This uploads to the Central Portal's OSSRH Staging API. Then hand the upload to the Central Portal with
-   `curl -X POST -H "Authorization: Bearer <base64 of username:password of the token>" https://ossrh-staging-api.central.sonatype.com/manual/upload/defaultRepository/com.github.cyberpartizan`
+   `curl -X POST -H "Authorization: Bearer <base64 of username:password of the token>" https://ossrh-staging-api.central.sonatype.com/manual/upload/defaultRepository/io.github.cyberpartizan`
    and release the deployment in the Central Portal.
 6. Publish the plugin: `./gradlew :not-null-for-k-gradle-plugin:publishPlugins`. The first version of a plugin
    waits for the Plugin Portal's manual approval.

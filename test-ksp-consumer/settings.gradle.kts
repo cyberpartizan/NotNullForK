@@ -11,7 +11,7 @@ pluginManagement {
     }
     plugins {
         kotlin("jvm") version kotlinVersion
-        id("com.github.cyberpartizan.not-null-for-k") version notNullForKVersion
+        id("io.github.cyberpartizan.not-null-for-k") version notNullForKVersion
     }
 }
 

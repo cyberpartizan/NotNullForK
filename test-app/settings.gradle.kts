@@ -16,7 +16,7 @@ pluginManagement {
         kotlin("plugin.spring") version kotlinVersion
         id("org.springframework.boot") version springBootVersion
         id("io.spring.dependency-management") version "1.1.7"
-        id("com.github.cyberpartizan.not-null-for-k") version notNullForKVersion
+        id("io.github.cyberpartizan.not-null-for-k") version notNullForKVersion
     }
 }
 
