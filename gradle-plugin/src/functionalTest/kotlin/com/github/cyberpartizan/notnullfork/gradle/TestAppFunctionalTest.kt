@@ -42,6 +42,18 @@ class TestAppFunctionalTest {
         assertThat(result.task(":kspKotlin")?.outcome).isEqualTo(TaskOutcome.SUCCESS)
         assertThat(result.task(":test")?.outcome).isEqualTo(TaskOutcome.SUCCESS)
         assertThat(executedTestCount()).isGreaterThan(0)
+        // Request Bodies the plugin can't handle don't fail the build: it warns about them.
+        val warnings = result.output.lines().filter { it.startsWith("w: [ksp]") }
+        assertThat(warnings).anyMatch {
+            it.endsWith("NotNullForK: no Mirror generated for com.example.app.Draft: its property 'body' is not in the primary constructor")
+        }
+        assertThat(warnings).anyMatch {
+            it.endsWith(
+                "NotNullForK: the Defaulted Field 'packaging' of com.example.app.PlaceOrderRequest is left as it is, " +
+                    "so the Required Fields of com.example.app.Packaging in it are not checked",
+            )
+        }
+        assertThat(warnings).noneMatch { "NotNullForKIgnore" in it }
     }
 
     private fun executedTestCount(): Int =

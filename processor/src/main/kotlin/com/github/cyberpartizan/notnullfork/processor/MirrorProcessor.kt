@@ -35,8 +35,10 @@ private const val JACKSON_PACKAGE_PREFIX = "com.fasterxml.jackson."
 private const val JACKSON_ANNOTATIONS_INSIDE = "com.fasterxml.jackson.annotation.JacksonAnnotationsInside"
 private const val JSON_DESERIALIZE = "com.fasterxml.jackson.databind.annotation.JsonDeserialize"
 private const val JSON_CREATOR = "com.fasterxml.jackson.annotation.JsonCreator"
+private const val JSON_IGNORE = "com.fasterxml.jackson.annotation.JsonIgnore"
+private val JSON_REFERENCES = setOf("com.fasterxml.jackson.annotation.JsonManagedReference", "com.fasterxml.jackson.annotation.JsonBackReference")
 private const val OPT_OUT = "com.github.cyberpartizan.notnullfork.NotNullForKIgnore"
-private val OWN_WAY_CLASS_ANNOTATIONS = setOf(JSON_DESERIALIZE, "com.fasterxml.jackson.annotation.JsonTypeInfo")
+private const val JSON_TYPE_INFO = "com.fasterxml.jackson.annotation.JsonTypeInfo"
 
 class MirrorProcessorProvider : SymbolProcessorProvider {
     override fun create(environment: SymbolProcessorEnvironment): SymbolProcessor =
@@ -106,41 +108,89 @@ class MirrorProcessor(
      */
     private fun planFor(requestBody: KSClassDeclaration): MirrorPlan? {
         val name = requestBody.qualifiedName?.asString() ?: return null
-        return plans.getOrPut(name) {
-            when {
-                requestBody.annotations.any { it.qualifiedName() == OPT_OUT } -> {
-                    logger.info("NotNullForK: no Mirror generated for $name: it has @NotNullForKIgnore", requestBody)
-                    null
-                }
-                isSupported(requestBody) -> plan(requestBody)
-                else -> null
-            }
+        // Not getOrPut: it would examine (and log) a class without a Mirror again.
+        if (name in plans) return plans[name]
+        val reason = whyNoMirror(requestBody)
+        if (reason != null) {
+            val message = "NotNullForK: no Mirror generated for $name: ${reason.text}"
+            if (reason.warn) logger.warn(message, requestBody) else logger.info(message, requestBody)
         }
+        return (if (reason == null) plan(requestBody) else null).also { plans[name] = it }
     }
 
-    // Only classes whose properties are all in the primary constructor, and that a Mirror in another
-    // file can construct, are supported so far; anything else is left to Spring.
-    private fun isSupported(requestBody: KSClassDeclaration): Boolean {
-        val parameters = requestBody.primaryConstructor?.parameters
-        val supported = requestBody.origin == Origin.KOTLIN &&
-            requestBody.classKind == ClassKind.CLASS &&
-            requestBody.typeParameters.isEmpty() &&
-            UNCONSTRUCTIBLE.none { it in requestBody.modifiers } &&
-            Modifier.PRIVATE !in requestBody.primaryConstructor?.modifiers.orEmpty() &&
-            parameters != null &&
-            parameters.all { it.isVal || it.isVar }
-        if (!supported) logger.info("NotNullForK: no Mirror generated for ${requestBody.qualifiedName?.asString()}", requestBody)
-        return supported
+    /**
+     * Why [requestBody] gets no Mirror, if it gets none whatever its fields are: it has an Opt-out, it
+     * comes from a library, or it is a shape that the plugin can't handle, which is left to Spring with
+     * a build warning.
+     */
+    private fun whyNoMirror(requestBody: KSClassDeclaration): NoMirror? {
+        if (requestBody.hasOptOut()) return NoMirror("it has @NotNullForKIgnore", warn = false)
+        if (requestBody.origin == Origin.JAVA) return NoMirror("it is a Java class")
+        if (requestBody.origin != Origin.KOTLIN) return NoMirror("it is not compiled in this module", warn = false)
+        when (requestBody.classKind) {
+            ClassKind.CLASS, ClassKind.INTERFACE -> Unit
+            // Nothing in them to check.
+            else -> return NoMirror("it is not a class with properties", warn = false)
+        }
+        requestBody.polymorphicRoot()?.let { root ->
+            return NoMirror(if (root == requestBody) "it is polymorphic (@JsonTypeInfo)" else "it is polymorphic (@JsonTypeInfo on ${root.qualifiedName?.asString()})")
+        }
+        val modifiers = requestBody.modifiers
+        when {
+            Modifier.SEALED in modifiers -> return NoMirror("it is sealed")
+            requestBody.classKind == ClassKind.INTERFACE -> return NoMirror("it is an interface")
+            Modifier.ABSTRACT in modifiers -> return NoMirror("it is abstract")
+            requestBody.typeParameters.isNotEmpty() -> return NoMirror("it is generic")
+            Modifier.VALUE in modifiers || Modifier.INLINE in modifiers -> return NoMirror("it is a value class")
+            Modifier.INNER in modifiers -> return NoMirror("it is an inner class")
+        }
+        // The Mirror, in another file, must see the class and its primary constructor.
+        val hidden = generateSequence(requestBody) { it.parentDeclaration as? KSClassDeclaration }.firstOrNull { it.hiddenAs() != null }
+        if (hidden != null) {
+            return NoMirror(if (hidden == requestBody) "it is ${hidden.hiddenAs()}" else "it is inside ${hidden.hiddenAs()} ${hidden.qualifiedName?.asString()}")
+        }
+        if (requestBody.hasOwnDeserializer()) return NoMirror("it has a class-level @JsonDeserialize")
+        if (requestBody.hasJsonCreator()) return NoMirror("it has a @JsonCreator")
+
+        val constructor = requestBody.primaryConstructor ?: return NoMirror("it has no primary constructor")
+        constructor.hiddenAs()?.let { return NoMirror("its primary constructor is $it") }
+        constructor.parameters.firstOrNull { !it.isVal && !it.isVar }?.let {
+            return NoMirror("its primary constructor parameter '${it.name?.asString()}' is not a property")
+        }
+        // Jackson also reads (sets) the properties outside the primary constructor that it can see and
+        // doesn't ignore; the Mirror couldn't. A property computed by its getter is not read.
+        val parameterNames = constructor.parameters.mapNotNull { it.name?.asString() }.toSet()
+        requestBody.getAllProperties().firstOrNull {
+            it.simpleName.asString() !in parameterNames && it.extensionReceiver == null && it.hiddenAs() == null &&
+                (it.hasBackingField || it.isMutable) && !it.isJsonIgnored()
+        }?.let { return NoMirror("its property '${it.simpleName.asString()}' is not in the primary constructor") }
+        // Jackson links the two sides of a reference by their declared types, which the Mirror changes.
+        val properties = requestBody.propertiesByName()
+        for (parameter in constructor.parameters) {
+            val name = parameter.name?.asString() ?: continue
+            val annotations = parameter.annotations + properties[name]?.allAnnotations().orEmpty()
+            val reference = annotations.flatMap { it.jacksonNames() }.firstOrNull { it in JSON_REFERENCES } ?: continue
+            return NoMirror("its property '$name' has @${reference.substringAfterLast('.')}")
+        }
+        return null
     }
+
+    /** The annotations of this property, its getter and its setter. */
+    private fun KSPropertyDeclaration.allAnnotations(): Sequence<KSAnnotation> =
+        annotations + getter?.annotations.orEmpty() + setter?.annotations.orEmpty()
+
+    /** Whether Jackson ignores this property: `@JsonIgnore` (written on it or bundled) other than `@JsonIgnore(false)`. */
+    private fun KSPropertyDeclaration.isJsonIgnored(): Boolean = allAnnotations().any { annotation ->
+        JSON_IGNORE in annotation.jacksonNames() &&
+            (annotation.qualifiedName() != JSON_IGNORE || annotation.arguments.none { it.value == false })
+    }
+
+    private fun KSClassDeclaration.propertiesByName(): Map<String, KSPropertyDeclaration> =
+        declarations.filterIsInstance<KSPropertyDeclaration>().associateBy { it.simpleName.asString() }
 
     private fun plan(requestBody: KSClassDeclaration): MirrorPlan? {
-        if (requestBody.annotations.any { it.qualifiedName() == JSON_DESERIALIZE }) {
-            // The Request Body's own deserializer builds the Request Body, not the Mirror.
-            return noMirror(requestBody, "it has a class-level @JsonDeserialize")
-        }
         val parameters = requestBody.primaryConstructor!!.parameters
-        val properties = requestBody.declarations.filterIsInstance<KSPropertyDeclaration>()
-            .associateBy { it.simpleName.asString() }
+        val properties = requestBody.propertiesByName()
         val defaulted = parameters.filter { it.hasDefault }
         val source = if (defaulted.isEmpty()) null else DefaultValues.read(requestBody)
         if (defaulted.isNotEmpty() && source == null) {
@@ -149,6 +199,8 @@ class MirrorProcessor(
 
         val requiredNames = parameters.filter { !it.hasDefault && !it.type.resolve().isMarkedNullable }
             .map { it.name!!.asString() }.toSet()
+        // Logged only if the class gets a Mirror.
+        val warnings = mutableListOf<Pair<String, KSValueParameter>>()
         val fields = parameters.map { parameter ->
             val name = parameter.name!!.asString()
             val type = parameter.type.toTypeName()
@@ -163,6 +215,11 @@ class MirrorProcessor(
                         return noMirror(requestBody, "the default value of '$name' refers to ${unresolvable.joinToString { "'$it'" }}")
                     }
                     // A Defaulted Field keeps the Request Body's type, even if that type has a Mirror.
+                    val unchecked = containerAndNestedTypeOf(parameter, annotations).second
+                    if (unchecked != null && !unchecked.hasOptOut() && unchecked.hasRequiredFields()) {
+                        warnings += "NotNullForK: the Defaulted Field '$name' of ${requestBody.qualifiedName!!.asString()} is left as it is, " +
+                            "so the Required Fields of ${unchecked.qualifiedName!!.asString()} in it are not checked" to parameter
+                    }
                     PlannedField(MirrorField.Defaulted(name, type, mutable, annotations, defaultValue), possiblyNested = null)
                 }
                 else -> {
@@ -176,8 +233,15 @@ class MirrorProcessor(
                 }
             }
         }
+        for ((message, parameter) in warnings) logger.warn(message, parameter)
         return MirrorPlan(requestBody.qualifiedName!!.asString(), fields, source?.imports.orEmpty(), requestBody.annotations.toSpecs())
     }
+
+    private fun KSClassDeclaration.hasOptOut(): Boolean = annotations.any { it.qualifiedName() == OPT_OUT }
+
+    /** Whether this class has Required Fields: primary constructor parameters of a non-null type without a default value. */
+    private fun KSClassDeclaration.hasRequiredFields(): Boolean =
+        primaryConstructor?.parameters.orEmpty().any { !it.hasDefault && !it.type.resolve().isMarkedNullable }
 
     /**
      * The [Container] of a Required or nullable list, set or map field whose elements (values of a map)
@@ -216,30 +280,37 @@ class MirrorProcessor(
     }
 
     /**
-     * The class of [type] if it may be a Nested Type: a class of this compilation. It is one if it gets
-     * a Mirror. Library types such as `String` or `List` are not, nor is one that Jackson reads in its
-     * own way (see [isReadByJacksonItsOwnWay]); those are left as they are, without a warning.
+     * The class of [type] if it may be a Nested Type: a class or interface of this compilation. It is
+     * one if it gets a Mirror; if it is a shape the plugin can't handle, the build warns about it. Library
+     * types such as `String` or `List` are not, nor are enum classes, objects and value classes (Jackson
+     * reads a value class as its single value): those are left as they are, without a warning.
      */
     private fun possiblyNestedTypeOf(type: KSType): KSClassDeclaration? {
-        if (type.arguments.isNotEmpty()) return null
         val declaration = type.declaration.classDeclaration() ?: return null
         return declaration.takeIf {
-            it.origin == Origin.KOTLIN && it.classKind == ClassKind.CLASS && !it.isReadByJacksonItsOwnWay()
+            it.origin == Origin.KOTLIN &&
+                (it.classKind == ClassKind.CLASS || it.classKind == ClassKind.INTERFACE) &&
+                Modifier.VALUE !in it.modifiers && Modifier.INLINE !in it.modifiers
         }
     }
 
-    /**
-     * A class that Jackson builds through a `@JsonCreator`, reads with its own `@JsonDeserialize`, or
-     * reads as a subtype (`@JsonTypeInfo` on it or a supertype): its Mirror would not be read the same way.
-     */
-    private fun KSClassDeclaration.isReadByJacksonItsOwnWay(): Boolean {
+    /** A class that Jackson builds through a `@JsonCreator` (on a constructor or companion function). */
+    private fun KSClassDeclaration.hasJsonCreator(): Boolean {
         val creators = getConstructors() + declarations.filterIsInstance<KSClassDeclaration>()
             .filter { it.isCompanionObject }.flatMap { it.getDeclaredFunctions() }
-        if (creators.any { creator -> creator.annotations.any { it.qualifiedName() == JSON_CREATOR } }) return true
+        return creators.any { creator -> creator.annotations.any { it.qualifiedName() == JSON_CREATOR } }
+    }
+
+    /** A class that Jackson reads with its own `@JsonDeserialize`, written on it or bundled in an annotation on it. */
+    private fun KSClassDeclaration.hasOwnDeserializer(): Boolean =
+        annotations.any { JSON_DESERIALIZE in it.jacksonNames() }
+
+    /** This class or the nearest supertype with `@JsonTypeInfo`, through which Jackson reads it as a subtype. */
+    private fun KSClassDeclaration.polymorphicRoot(): KSClassDeclaration? {
         val types = generateSequence(listOf(this)) { classes ->
             classes.flatMap { c -> c.superTypes.mapNotNull { it.resolve().declaration.classDeclaration() } }.takeIf { it.isNotEmpty() }
         }.flatten()
-        return types.any { c -> c.annotations.any { it.qualifiedName() in OWN_WAY_CLASS_ANNOTATIONS } }
+        return types.firstOrNull { c -> c.annotations.any { JSON_TYPE_INFO in it.jacksonNames() } }
     }
 
     /** This class, or the class this type alias stands for. */
@@ -271,6 +342,18 @@ class MirrorProcessor(
     private fun KSAnnotation.qualifiedName(): String? =
         annotationType.resolve().declaration.qualifiedName?.asString()
 
+    /**
+     * The qualified name of this annotation and, if it bundles Jackson annotations with
+     * `@JacksonAnnotationsInside`, of the annotations it bundles, at any depth.
+     */
+    private fun KSAnnotation.jacksonNames(seen: MutableSet<String> = mutableSetOf()): Set<String> {
+        val name = qualifiedName() ?: return emptySet()
+        if (!seen.add(name)) return emptySet()
+        val bundled = annotationType.resolve().declaration.annotations
+        if (bundled.none { it.qualifiedName() == JACKSON_ANNOTATIONS_INSIDE }) return setOf(name)
+        return setOf(name) + bundled.flatMap { it.jacksonNames(seen) }
+    }
+
     /** A Jackson annotation, or an annotation that bundles Jackson annotations with `@JacksonAnnotationsInside`. */
     private fun KSAnnotation.isJackson(): Boolean =
         qualifiedName()?.startsWith(JACKSON_PACKAGE_PREFIX) == true ||
@@ -282,9 +365,6 @@ class MirrorProcessor(
     }
 
     private companion object {
-        /** Classes a Mirror can't construct. */
-        val UNCONSTRUCTIBLE = listOf(Modifier.ABSTRACT, Modifier.SEALED, Modifier.INNER, Modifier.VALUE, Modifier.INLINE, Modifier.PRIVATE)
-
         /** The collection and map types whose elements are checked, or mapped, one by one. */
         val CONTAINERS = mapOf(
             "kotlin.collections.Collection" to Container.Kind.LIST,
@@ -298,6 +378,9 @@ class MirrorProcessor(
         )
     }
 }
+
+/** Why a class gets no Mirror, and whether the build warns about it. */
+private class NoMirror(val text: String, val warn: Boolean = true)
 
 /** What a Request Body or Nested Type looks like in its Mirror, before it is known which of its field types have Mirrors. */
 private class MirrorPlan(
@@ -358,7 +441,14 @@ private class DefaultValues(
             }
             return DefaultValues(parameters, imports, privateNames)
         }
-
-        private fun KSDeclaration.isPrivate() = Modifier.PRIVATE in modifiers
     }
+}
+
+private fun KSDeclaration.isPrivate() = Modifier.PRIVATE in modifiers
+
+/** "private" or "protected" if code in another file of the package can't use this declaration. */
+private fun KSDeclaration.hiddenAs(): String? = when {
+    isPrivate() -> "private"
+    Modifier.PROTECTED in modifiers -> "protected"
+    else -> null
 }
