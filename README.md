@@ -23,7 +23,7 @@ Kotlin 1.8.22 and newer are supported. On Kotlin 1.8, apply the KSP of your Kotl
 plugins {
     kotlin("jvm") version "1.8.22"
     id("com.google.devtools.ksp") version "1.8.22-1.0.11"
-    id("io.github.cyberpartizan.not-null-for-k") version "..."
+    id("com.github.cyberpartizan.not-null-for-k") version "..."
 }
 ```
 
