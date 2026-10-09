@@ -1,6 +1,7 @@
 package com.example.app
 
 import com.github.cyberpartizan.notnullfork.Mirror
+import jakarta.validation.Constraint
 import jakarta.validation.constraints.NotNull
 import org.assertj.core.api.Assertions.assertThat
 import org.junit.jupiter.api.Test
@@ -61,7 +62,39 @@ class MirrorTest {
         assertThat(mustNotBeNull(accountMirror, "nickname")).isFalse()
     }
 
+    @Test
+    fun `the Request Body's constraint annotations are not copied to the Mirror`() {
+        // The Request Body has constraints on its class, fields, getter and a type.
+        assertThat(constraintsOn(SignUpRequest::class)).contains(
+            "class" to "NotAdmin",
+            "field email" to "Email",
+            "field password" to "NoWhitespace",
+            "method getAge" to "Min",
+            "type of website" to "Size",
+        )
+
+        assertThat(constraintsOn(mirrorOf("SignUpRequest"))).containsExactlyInAnyOrder(
+            "field email" to "NotNull",
+            "field password" to "NotNull",
+            "field age" to "NotNull",
+        )
+    }
+
     private fun mirrorOf(requestBody: String): KClass<*> = Class.forName("com.example.app.generated.${requestBody}Mirror").kotlin
+
+    /** `(where, constraint annotation name)` for every Bean Validation constraint on [type]. */
+    private fun constraintsOn(type: KClass<*>): List<Pair<String, String?>> = buildList {
+        type.java.annotations.forEach { add("class" to it) }
+        type.java.declaredFields.forEach { field -> field.annotations.forEach { add("field ${field.name}" to it) } }
+        type.java.declaredMethods.forEach { method -> method.annotations.forEach { add("method ${method.name}" to it) } }
+        type.java.declaredConstructors.forEach { constructor ->
+            constructor.parameters.forEach { parameter -> parameter.annotations.forEach { add("constructor ${parameter.name}" to it) } }
+        }
+        type.memberProperties.forEach { property ->
+            property.returnType.annotations.forEach { add("type of ${property.name}" to it) }
+        }
+    }.filter { (_, annotation) -> annotation.annotationClass.java.isAnnotationPresent(Constraint::class.java) }
+        .map { (target, annotation) -> target to annotation.annotationClass.simpleName }
 
     private fun property(mirror: KClass<*>, name: String) = mirror.memberProperties.single { it.name == name }
 
