@@ -48,10 +48,10 @@ class PublishingFunctionalTest {
             assertThat(artifact(artifactId, ".pom").readText()).contains(
                 "<name>$artifactId</name>",
                 "<description>",
-                "<url>https://github.com/cyberpartizan/not-null-for-k</url>",
+                "<url>https://github.com/cyberpartizan/NotNullForK</url>",
                 "<name>The Apache License, Version 2.0</name>",
                 "<id>cyberpartizan</id>",
-                "<connection>scm:git:https://github.com/cyberpartizan/not-null-for-k.git</connection>",
+                "<connection>scm:git:https://github.com/cyberpartizan/NotNullForK.git</connection>",
             )
         }
         // Only the module metadata keeps the KSP version only preferred (ADR 0003).

@@ -16,8 +16,8 @@ dependencies {
 }
 
 gradlePlugin {
-    website = "https://github.com/cyberpartizan/not-null-for-k"
-    vcsUrl = "https://github.com/cyberpartizan/not-null-for-k.git"
+    website = "https://github.com/cyberpartizan/NotNullForK"
+    vcsUrl = "https://github.com/cyberpartizan/NotNullForK.git"
     plugins {
         create("notNullForK") {
             id = "io.github.cyberpartizan.not-null-for-k"

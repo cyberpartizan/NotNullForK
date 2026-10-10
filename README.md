@@ -62,7 +62,7 @@ These were filled in from the GitHub user `cyberpartizan` and are not confirmed 
 
 - License: Apache License 2.0 (the `LICENSE` file).
 - Developer: id and name `cyberpartizan`, URL `https://github.com/cyberpartizan`, no email.
-- Project, website, VCS and SCM URLs: `https://github.com/cyberpartizan/not-null-for-k`.
+- Project, website, VCS and SCM URLs: `https://github.com/cyberpartizan/NotNullForK`.
 - Plugin Portal display name `NotNullForK` and tags `kotlin, spring, spring-boot, validation, jackson, ksp`.
 - The javadoc jars are empty, because the code is Kotlin. Maven Central accepts that; Dokka could fill them.
 

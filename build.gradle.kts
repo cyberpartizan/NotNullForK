@@ -9,7 +9,7 @@ plugins {
 }
 
 // Release metadata shared by all published artifacts. All artifacts take the one version in gradle.properties.
-val projectUrl = "https://github.com/cyberpartizan/not-null-for-k"
+val projectUrl = "https://github.com/cyberpartizan/NotNullForK"
 
 // Local Maven repository the TestKit test app resolves the plugin, processor and runtime from.
 val testRepo = layout.buildDirectory.dir("test-repo")
