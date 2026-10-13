@@ -9,7 +9,7 @@ See [GLOSSARY.md](GLOSSARY.md) for the terms and [docs/adr](docs/adr) for the de
 ```kotlin
 plugins {
     kotlin("jvm") version "..."
-    id("io.github.cyberpartizan.not-null-for-k") version "..."
+    id("io.github.cyberpartizan.not-null-for-k") version "0.1.0"
 }
 ```
 
@@ -23,7 +23,7 @@ Kotlin 1.8.22 and newer are supported. On Kotlin 1.8, apply the KSP of your Kotl
 plugins {
     kotlin("jvm") version "1.8.22"
     id("com.google.devtools.ksp") version "1.8.22-1.0.11"
-    id("io.github.cyberpartizan.not-null-for-k") version "..."
+    id("io.github.cyberpartizan.not-null-for-k") version "0.1.0"
 }
 ```
 
@@ -55,10 +55,9 @@ To try a build locally:
 `PublishingFunctionalTest` (in `./gradlew check`) does the same into an isolated `build/maven-local` and builds the
 test app against only that repository.
 
-## Values to confirm before the first release
+## Project metadata
 
-These were filled in from the GitHub user `cyberpartizan` and are not confirmed yet
-(see the root `build.gradle.kts` and `gradle-plugin/build.gradle.kts`):
+Set in the root `build.gradle.kts` and `gradle-plugin/build.gradle.kts`:
 
 - License: Apache License 2.0 (the `LICENSE` file).
 - Developer: id and name `cyberpartizan`, URL `https://github.com/cyberpartizan`, no email.
@@ -68,7 +67,7 @@ These were filled in from the GitHub user `cyberpartizan` and are not confirmed 
 
 ## Manual release steps
 
-Nothing has been published yet. These steps need the maintainer's accounts and keys:
+These steps need the maintainer's accounts and keys:
 
 1. **Signing keys.** Create a GPG key pair, upload the public key to a key server Maven Central reads
    (e.g. `keys.openpgp.org`), and provide the ASCII-armored private key and its password as the `signingKey`
